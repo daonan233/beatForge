@@ -1,0 +1,26 @@
+{
+  "name": "beatforge",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "setup:local": "powershell -ExecutionPolicy Bypass -File scripts/setup-local.ps1",
+    "setup:gpu": "powershell -ExecutionPolicy Bypass -File scripts/setup-gpu.ps1",
+    "dev": "concurrently -n server,web -c blue,magenta \"npm run dev -w @beatforge/server\" \"npm run dev -w @beatforge/web\"",
+    "build": "npm run build -w @beatforge/shared && npm run build -w @beatforge/server && npm run build -w @beatforge/web",
+    "typecheck": "npm run typecheck -w @beatforge/server && npm run typecheck -w @beatforge/web",
+    "test": "npm run test -w @beatforge/shared && npm run test -w @beatforge/server && npm run test -w @beatforge/web",
+    "test:python": "python -m unittest discover -s services/analyzer/tests -v",
+    "start": "npm run start -w @beatforge/server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
