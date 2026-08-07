@@ -6,7 +6,7 @@ import { beatToTimeMs } from "@beatforge/shared";
 import { api } from "../api";
 import { useSettings } from "../composables/settings";
 import GameBoard, { type GameRenderNote } from "../components/GameBoard.vue";
-import { ArrowLeft, Pause, Play, RotateCcw, Settings2, Trophy } from "lucide-vue-next";
+import { ArrowLeft, Bot, Pause, Play, RotateCcw, Settings2, Trophy } from "lucide-vue-next";
 import { classifyTiming, judgementWeights, normalizedScore, type Grade } from "../game/scoring";
 import { clampScrollSpeed } from "../game/scroll";
 
@@ -31,6 +31,8 @@ const ready = ref(false);
 const running = ref(false);
 const paused = ref(false);
 const finished = ref(false);
+const autoplay = ref(false);
+const autoplayUsed = ref(false);
 const currentTimeMs = ref(-1000);
 const pressed = ref([false, false, false, false]);
 const judgement = ref("");
@@ -48,7 +50,10 @@ let playbackOffsetMs = 0;
 let animationFrame = 0;
 let judgementTimer: number | undefined;
 let completing = false;
+let playheadTimeMs = -1000;
+let lastHudUpdate = 0;
 const heldCodes = new Set<string>();
+const autoLaneTimers: Array<number | undefined> = [undefined, undefined, undefined, undefined];
 
 const keyLabels = computed(() => settings.keys.map((key) => key.replace("Key", "")));
 const totalEvents = computed(() => notes.value.reduce((sum, note) => sum + (note.type === "hold" ? 2 : 1), 0));
@@ -60,6 +65,28 @@ const progress = computed(() => buffer ? Math.max(0, Math.min(1, currentTimeMs.v
 
 function adjustSpeed(delta: number) {
   settings.scrollSpeed = clampScrollSpeed(settings.scrollSpeed + delta);
+}
+
+function toggleAutoplay() {
+  if (running.value) return;
+  autoplay.value = !autoplay.value;
+}
+
+function clearAutoLaneTimers() {
+  for (let lane = 0; lane < autoLaneTimers.length; lane += 1) {
+    if (autoLaneTimers[lane]) clearTimeout(autoLaneTimers[lane]);
+    autoLaneTimers[lane] = undefined;
+  }
+}
+
+function flashAutoLane(lane: number) {
+  pressed.value[lane] = true;
+  if (autoLaneTimers[lane]) clearTimeout(autoLaneTimers[lane]);
+  autoLaneTimers[lane] = window.setTimeout(() => {
+    const holding = notes.value.some((note) => note.lane === lane && note.status === "holding");
+    if (!holding) pressed.value[lane] = false;
+    autoLaneTimers[lane] = undefined;
+  }, 85);
 }
 
 function showJudgement(grade: Grade) {
@@ -82,6 +109,8 @@ function resetState() {
   }
   counts.value = { perfect: 0, great: 0, good: 0, miss: 0 };
   weightedScore.value = 0; combo.value = 0; maxCombo.value = 0; currentTimeMs.value = -1000;
+  playheadTimeMs = -1000; lastHudUpdate = 0;
+  autoplayUsed.value = false; clearAutoLaneTimers();
   finished.value = false; completing = false; playbackOffsetMs = 0; heldCodes.clear(); pressed.value = [false, false, false, false];
 }
 
@@ -103,14 +132,17 @@ async function startGame() {
   if (!context || !buffer) return;
   await context.resume();
   if (finished.value) resetState();
+  if (autoplay.value) autoplayUsed.value = true;
   createSource(playbackOffsetMs);
 }
 
 function pauseGame() {
   if (!context || !running.value) return;
   playbackOffsetMs = Math.max(0, (context.currentTime - contextStart) * 1000 + playbackOffsetMs);
+  playheadTimeMs = playbackOffsetMs + settings.latencyMs;
+  currentTimeMs.value = playheadTimeMs;
   source?.stop(); source = undefined; running.value = false; paused.value = true;
-  heldCodes.clear(); pressed.value = [false, false, false, false];
+  heldCodes.clear(); clearAutoLaneTimers(); pressed.value = [false, false, false, false];
 }
 
 function resumeGame() { if (context && buffer) void context.resume().then(() => createSource(playbackOffsetMs)); }
@@ -122,9 +154,9 @@ function restartGame() {
 
 function hitLane(lane: number) {
   const candidates = notes.value.filter((note) => note.lane === lane && note.head === "pending");
-  const note = candidates.sort((a, b) => Math.abs(a.startMs - currentTimeMs.value) - Math.abs(b.startMs - currentTimeMs.value))[0];
+  const note = candidates.sort((a, b) => Math.abs(a.startMs - playheadTimeMs) - Math.abs(b.startMs - playheadTimeMs))[0];
   if (!note) return;
-  const grade = classifyTiming(currentTimeMs.value - note.startMs);
+  const grade = classifyTiming(playheadTimeMs - note.startMs);
   if (grade === "miss") return;
   note.head = grade; record(grade);
   if (note.type === "tap") note.status = "done";
@@ -134,7 +166,7 @@ function hitLane(lane: number) {
 function releaseLane(lane: number) {
   const note = notes.value.find((item) => item.lane === lane && item.status === "holding" && item.tail === "pending");
   if (!note || note.endMs == null) return;
-  const grade = classifyTiming(currentTimeMs.value - note.endMs);
+  const grade = classifyTiming(playheadTimeMs - note.endMs);
   note.tail = grade; note.status = grade === "miss" ? "missed" : "done"; record(grade);
 }
 
@@ -146,6 +178,8 @@ function onKeydown(event: KeyboardEvent) {
     if (running.value) pauseGame(); else if (paused.value) resumeGame(); else void startGame();
     return;
   }
+  if (event.code === "KeyA" && !running.value) { event.preventDefault(); toggleAutoplay(); return; }
+  if (autoplay.value) return;
   if (event.repeat || !running.value || heldCodes.has(event.code)) return;
   const lane = settings.keys.indexOf(event.code);
   if (lane < 0) return;
@@ -161,14 +195,37 @@ function onKeyup(event: KeyboardEvent) {
 
 function processMisses() {
   for (const note of notes.value) {
-    if (note.head === "pending" && currentTimeMs.value > note.startMs + 140) {
+    if (note.head === "pending" && playheadTimeMs > note.startMs + 140) {
       note.head = "miss"; note.status = note.type === "hold" ? "holding" : "missed"; record("miss");
       if (note.type === "hold") { note.tail = "miss"; note.status = "missed"; record("miss"); }
     }
-    if (note.type === "hold" && note.status === "holding" && note.tail === "pending" && note.endMs != null && currentTimeMs.value >= note.endMs) {
+    if (note.type === "hold" && note.status === "holding" && note.tail === "pending" && note.endMs != null && playheadTimeMs >= note.endMs) {
       const code = settings.keys[note.lane];
       const grade: Grade = heldCodes.has(code) ? "perfect" : "miss";
       note.tail = grade; note.status = grade === "miss" ? "missed" : "done"; record(grade);
+    }
+  }
+}
+
+function processAutoplay() {
+  for (const note of notes.value) {
+    if (note.head === "pending" && playheadTimeMs >= note.startMs) {
+      note.head = "perfect";
+      record("perfect");
+      flashAutoLane(note.lane);
+      if (note.type === "tap") note.status = "done";
+      else {
+        note.status = "holding";
+        pressed.value[note.lane] = true;
+      }
+    }
+    if (note.type === "hold" && note.status === "holding" && note.tail === "pending" &&
+        note.endMs != null && playheadTimeMs >= note.endMs) {
+      note.tail = "perfect";
+      note.status = "done";
+      record("perfect");
+      const anotherHold = notes.value.some((item) => item !== note && item.lane === note.lane && item.status === "holding");
+      if (!anotherHold) pressed.value[note.lane] = false;
     }
   }
 }
@@ -177,19 +234,32 @@ async function completeGame() {
   if (completing || !chart.value) return;
   completing = true; running.value = false; finished.value = true;
   source?.stop();
+  clearAutoLaneTimers(); pressed.value = [false, false, false, false];
   const result: ScoreSummary = {
     score: score.value, accuracy: Number(accuracy.value.toFixed(2)), maxCombo: maxCombo.value,
     perfect: counts.value.perfect, great: counts.value.great, good: counts.value.good, miss: counts.value.miss,
   };
+  if (autoplayUsed.value) { savedBest.value = undefined; return; }
   try { savedBest.value = (await api.saveScore(songId, difficulty, chart.value.revision, result)).best; }
   catch (cause) { error.value = cause instanceof Error ? cause.message : "成绩保存失败"; }
 }
 
-function tick() {
+function getRenderTimeMs() {
   if (running.value && context) {
-    currentTimeMs.value = (context.currentTime - contextStart) * 1000 + playbackOffsetMs + settings.latencyMs;
-    processMisses();
-    if (judgedEvents.value >= totalEvents.value || (buffer && currentTimeMs.value > buffer.duration * 1000 + 300)) void completeGame();
+    return (context.currentTime - contextStart) * 1000 + playbackOffsetMs + settings.latencyMs;
+  }
+  return playheadTimeMs;
+}
+
+function tick(frameTime: number) {
+  if (running.value && context) {
+    playheadTimeMs = getRenderTimeMs();
+    if (frameTime - lastHudUpdate >= 50) {
+      currentTimeMs.value = playheadTimeMs;
+      lastHudUpdate = frameTime;
+    }
+    if (autoplay.value) processAutoplay(); else processMisses();
+    if (judgedEvents.value >= totalEvents.value || (buffer && playheadTimeMs > buffer.duration * 1000 + 300)) void completeGame();
   }
   animationFrame = requestAnimationFrame(tick);
 }
@@ -218,6 +288,7 @@ onMounted(() => { window.addEventListener("keydown", onKeydown); window.addEvent
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKeydown); window.removeEventListener("keyup", onKeyup);
   cancelAnimationFrame(animationFrame); if (judgementTimer) clearTimeout(judgementTimer);
+  clearAutoLaneTimers();
   source?.stop(); void context?.close();
 });
 </script>
@@ -235,19 +306,19 @@ onBeforeUnmount(() => {
     <div class="game-stage-wrap">
       <aside class="game-metrics left"><div><small>ACCURACY</small><strong>{{ accuracy.toFixed(2) }}<i>%</i></strong></div><div><small>MAX COMBO</small><strong>{{ maxCombo }}</strong></div><div class="judgement-list"><span><i class="perfect" />PERFECT <b>{{ counts.perfect }}</b></span><span><i class="great" />GREAT <b>{{ counts.great }}</b></span><span><i class="good" />GOOD <b>{{ counts.good }}</b></span><span><i class="miss" />MISS <b>{{ counts.miss }}</b></span></div></aside>
       <main class="game-cabinet">
-        <GameBoard :notes="notes" :current-time-ms="currentTimeMs" :speed="settings.scrollSpeed" :pressed="pressed" :key-labels="keyLabels" :judgement="judgement" />
+        <GameBoard :notes="notes" :time-source="getRenderTimeMs" :speed="settings.scrollSpeed" :pressed="pressed" :key-labels="keyLabels" :judgement="judgement" />
         <div v-if="combo > 1 && running" class="combo-display"><strong>{{ combo }}</strong><span>COMBO</span></div>
         <div v-if="loading" class="game-overlay"><div class="loader-ring" /><h2>{{ loadingMessage }}</h2><p>首次载入需要稍等片刻</p></div>
         <div v-else-if="error && !ready" class="game-overlay"><h2>无法开始</h2><p>{{ error }}</p><button class="secondary-button" @click="router.push('/')">返回曲库</button></div>
-        <div v-else-if="ready && !running && !paused && !finished" class="game-overlay start-overlay"><span class="eyebrow">READY TO PLAY</span><h2>{{ difficultyLabel }}</h2><p>使用 {{ keyLabels.join(' · ') }} 击打四条轨道</p><button class="start-button" @click="startGame"><Play :size="24" />开始</button><small>也可以按空格键</small></div>
+        <div v-else-if="ready && !running && !paused && !finished" class="game-overlay start-overlay"><span class="eyebrow">READY TO PLAY</span><h2>{{ difficultyLabel }}</h2><p>{{ autoplay ? 'Autoplay 将自动演示全部音符' : `使用 ${keyLabels.join(' · ')} 击打四条轨道` }}</p><button class="start-button" @click="startGame"><Play :size="24" />开始</button><small>{{ autoplay ? 'AUTO 成绩不会保存 · A 切换' : '空格键开始 · A 开关 Autoplay' }}</small></div>
         <div v-else-if="paused" class="game-overlay"><Pause :size="30" /><h2>已暂停</h2><p>保持节奏，准备好再继续。</p><div class="overlay-actions"><button class="start-button small" @click="resumeGame"><Play :size="19" />继续</button><button class="ghost-button" @click="restartGame"><RotateCcw :size="17" />重新开始</button></div></div>
       </main>
-      <aside class="game-metrics right"><div><small>CHART</small><strong>v{{ chart?.revision ?? 0 }}</strong></div><div><small>NOTES</small><strong>{{ totalEvents }}</strong></div><div class="key-reminder"><span v-for="key in keyLabels" :key="key">{{ key }}</span></div><div class="game-speed-control"><button aria-label="降低下落速度" :disabled="settings.scrollSpeed <= 1" @click="adjustSpeed(-1)">−</button><span><small>SPEED</small><b>{{ settings.scrollSpeed }}</b><i>/ 10</i></span><button aria-label="提高下落速度" :disabled="settings.scrollSpeed >= 10" @click="adjustSpeed(1)">＋</button></div><p><Settings2 :size="15" />延迟 {{ settings.latencyMs }} ms<br />变速只影响画面</p></aside>
+      <aside class="game-metrics right"><div><small>CHART</small><strong>v{{ chart?.revision ?? 0 }}</strong></div><div><small>NOTES</small><strong>{{ totalEvents }}</strong></div><div class="key-reminder"><span v-for="key in keyLabels" :key="key">{{ key }}</span></div><button class="autoplay-toggle" :class="{ active: autoplay }" :disabled="running" @click="toggleAutoplay"><Bot :size="17" /><span><small>AUTOPLAY</small><b>{{ autoplay ? 'ON' : 'OFF' }}</b></span><i>A</i></button><div class="game-speed-control"><button aria-label="降低下落速度" :disabled="settings.scrollSpeed <= 1" @click="adjustSpeed(-1)">−</button><span><small>SPEED</small><b>{{ settings.scrollSpeed }}</b><i>/ 10</i></span><button aria-label="提高下落速度" :disabled="settings.scrollSpeed >= 10" @click="adjustSpeed(1)">＋</button></div><p><Settings2 :size="15" />延迟 {{ settings.latencyMs }} ms<br />Autoplay 不记录最佳成绩</p></aside>
     </div>
 
     <Transition name="fade">
       <div v-if="finished" class="result-backdrop">
-        <section class="result-card"><span class="eyebrow"><Trophy :size="15" /> TRACK COMPLETE</span><div class="rank">{{ accuracy >= 98 ? 'S' : accuracy >= 92 ? 'A' : accuracy >= 82 ? 'B' : accuracy >= 70 ? 'C' : 'D' }}</div><h2>{{ score.toLocaleString() }}</h2><p>{{ song?.title }} · {{ difficultyLabel }}</p><div class="result-stats"><div><span>准确率</span><b>{{ accuracy.toFixed(2) }}%</b></div><div><span>最高连击</span><b>{{ maxCombo }}</b></div><div><span>最佳成绩</span><b>{{ savedBest?.score.toLocaleString() ?? score.toLocaleString() }}</b></div></div><div class="result-judgements"><span>PERFECT <b>{{ counts.perfect }}</b></span><span>GREAT <b>{{ counts.great }}</b></span><span>GOOD <b>{{ counts.good }}</b></span><span>MISS <b>{{ counts.miss }}</b></span></div><div class="result-actions"><button class="ghost-button" @click="router.push('/')">返回曲库</button><button class="primary-button" @click="restartGame"><RotateCcw :size="17" />再来一次</button></div><small v-if="error" class="result-error">{{ error }}</small></section>
+        <section class="result-card"><span class="eyebrow"><Bot v-if="autoplayUsed" :size="15" /><Trophy v-else :size="15" /> {{ autoplayUsed ? 'AUTOPLAY COMPLETE' : 'TRACK COMPLETE' }}</span><div class="rank" :class="{ auto: autoplayUsed }">{{ autoplayUsed ? 'AUTO' : accuracy >= 98 ? 'S' : accuracy >= 92 ? 'A' : accuracy >= 82 ? 'B' : accuracy >= 70 ? 'C' : 'D' }}</div><h2>{{ score.toLocaleString() }}</h2><p>{{ song?.title }} · {{ difficultyLabel }}</p><div class="result-stats"><div><span>准确率</span><b>{{ accuracy.toFixed(2) }}%</b></div><div><span>最高连击</span><b>{{ maxCombo }}</b></div><div><span>{{ autoplayUsed ? '成绩状态' : '最佳成绩' }}</span><b>{{ autoplayUsed ? '不保存' : savedBest?.score.toLocaleString() ?? score.toLocaleString() }}</b></div></div><div class="result-judgements"><span>PERFECT <b>{{ counts.perfect }}</b></span><span>GREAT <b>{{ counts.great }}</b></span><span>GOOD <b>{{ counts.good }}</b></span><span>MISS <b>{{ counts.miss }}</b></span></div><div class="result-actions"><button class="ghost-button" @click="router.push('/')">返回曲库</button><button class="primary-button" @click="restartGame"><RotateCcw :size="17" />再来一次</button></div><small v-if="error" class="result-error">{{ error }}</small></section>
       </div>
     </Transition>
   </div>

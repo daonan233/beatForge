@@ -49,6 +49,22 @@ class GeneratorTests(unittest.TestCase):
         generated_time = notes[0]["beat"] * 500.0
         self.assertLess(abs(generated_time - 137.0), 3.0)
 
+    def test_normal_chart_fills_long_post_filter_gap(self):
+        anchors = [
+            {"beat": float(index), "timeMs": index * 500.0, "strength": 0.8,
+             "downbeat": index % 4 == 0}
+            for index in range(16)
+        ]
+        candidates = [
+            {"time_ms": 500.0, "strength": 1.0, "sustained": False,
+             "band": "melody", "source": "vocal_syllable"},
+            {"time_ms": 6000.0, "strength": 1.0, "sustained": False,
+             "band": "melody", "source": "vocal_syllable"},
+        ]
+        notes = generate_chart("normal", candidates, anchors, "gap-fill")
+        beats = sorted(set(note["beat"] for note in notes))
+        self.assertLessEqual(max(b - a for a, b in zip(beats, beats[1:])), 2.0)
+
 
 if __name__ == "__main__":
     unittest.main()

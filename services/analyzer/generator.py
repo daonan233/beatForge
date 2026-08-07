@@ -48,9 +48,12 @@ PROFILES = {
 def _effective_strength(candidate: Candidate, difficulty: str) -> float:
     source = candidate.get("source", "rhythm")
     source_weight = {
-        "easy": {"vocal": 1.20, "instrumental": 1.12, "melody": 1.16, "rhythm": 0.78},
-        "normal": {"vocal": 1.14, "instrumental": 1.08, "melody": 1.08, "rhythm": 0.90},
-        "hard": {"vocal": 1.06, "instrumental": 1.04, "melody": 1.02, "rhythm": 1.0},
+        "easy": {"vocal_syllable": 1.34, "vocal": 1.20, "instrumental": 1.12,
+                 "melody": 1.16, "gap_fill": 1.24, "gap_beat": 0.92, "rhythm": 0.86},
+        "normal": {"vocal_syllable": 1.28, "vocal": 1.14, "instrumental": 1.08,
+                   "melody": 1.08, "gap_fill": 1.22, "gap_beat": 0.98, "rhythm": 0.94},
+        "hard": {"vocal_syllable": 1.18, "vocal": 1.06, "instrumental": 1.04,
+                 "melody": 1.02, "gap_fill": 1.16, "gap_beat": 1.02, "rhythm": 1.0},
     }[difficulty].get(source, 1.0)
     return float(candidate["strength"]) * source_weight * float(candidate.get("priority", 1.0))
 
@@ -112,6 +115,41 @@ def _snap_candidate(beat: float, steps: tuple[float, ...], anchors: list[Anchor]
     return min(options, key=lambda value: abs(beat_to_time(value, anchors) - source_ms))
 
 
+def _fill_selected_gaps(
+    selected: list[tuple[Candidate, float, float, float]],
+    anchors: list[Anchor],
+    difficulty: str,
+) -> list[tuple[Candidate, float, float, float]]:
+    """Fill long post-filter gaps without placing taps inside detected holds."""
+    if len(selected) < 2:
+        return selected
+    result = list(selected)
+    ordered = sorted(selected, key=lambda item: item[2])
+    anchor_step = 2 if difficulty == "easy" else 1
+    for current, following in zip(ordered, ordered[1:]):
+        candidate, _, event_time, _ = current
+        covered_until = max(event_time, float(candidate.get("end_time_ms", event_time)))
+        next_time = following[2]
+        if next_time - covered_until <= 2000.0:
+            continue
+        available = [
+            anchor for anchor in anchors
+            if covered_until + 260.0 < float(anchor["timeMs"]) < next_time - 260.0
+        ]
+        for anchor in available[::anchor_step]:
+            time_ms = float(anchor["timeMs"])
+            synthetic: Candidate = {
+                "time_ms": time_ms,
+                "strength": 0.9,
+                "sustained": False,
+                "band": "low",
+                "source": "gap_fill",
+                "priority": 1.24 if anchor.get("downbeat") else 1.16,
+            }
+            result.append((synthetic, float(anchor["beat"]), time_ms, 0.0))
+    return sorted(result, key=lambda item: (item[2], item[1]))
+
+
 def generate_chart(
     difficulty: str,
     candidates: list[Candidate],
@@ -120,14 +158,20 @@ def generate_chart(
 ) -> list[dict]:
     profile = PROFILES[difficulty]
     threshold = _percentile([_effective_strength(candidate, difficulty) for candidate in candidates], profile.strength_quantile)
-    digest = hashlib.sha256(f"{seed_material}:{difficulty}:rules-v4-adaptive".encode()).digest()
+    digest = hashlib.sha256(f"{seed_material}:{difficulty}:rules-v7-post-filter-gap-fill".encode()).digest()
     rng = random.Random(int.from_bytes(digest[:8], "big"))
     selected: list[tuple[Candidate, float, float, float]] = []
     last_time = -10_000.0
     seen_beats: set[int] = set()
 
     for candidate in sorted(candidates, key=lambda value: value["time_ms"]):
-        if _effective_strength(candidate, difficulty) < threshold or candidate["time_ms"] - last_time < profile.min_gap_ms:
+        is_vocal_syllable = candidate.get("source") == "vocal_syllable"
+        vocal_threshold_scale = {"easy": 0.92, "normal": 0.72, "hard": 0.0}[difficulty]
+        candidate_threshold = threshold * vocal_threshold_scale if is_vocal_syllable else threshold
+        candidate_min_gap = min(profile.min_gap_ms, {
+            "easy": 500.0, "normal": 225.0, "hard": 100.0,
+        }[difficulty]) if is_vocal_syllable else profile.min_gap_ms
+        if _effective_strength(candidate, difficulty) < candidate_threshold or candidate["time_ms"] - last_time < candidate_min_gap:
             continue
         raw_beat = time_to_beat(candidate["time_ms"], anchors)
         if raw_beat < 0:
@@ -143,11 +187,13 @@ def generate_chart(
         beat_key = round(snapped * 12)
         if beat_key in seen_beats:
             continue
-        if candidate["time_ms"] - last_time < profile.min_gap_ms * 0.8:
+        if candidate["time_ms"] - last_time < candidate_min_gap * 0.8:
             continue
         selected.append((candidate, snapped, snapped_time, micro_offset))
         seen_beats.add(beat_key)
         last_time = candidate["time_ms"]
+
+    selected = _fill_selected_gaps(selected, anchors, difficulty)
 
     notes: list[dict] = []
     lane_last = [-10_000.0] * 4
@@ -168,7 +214,7 @@ def generate_chart(
         preferred = band_order.get(candidate.get("band", "mid"), band_order["mid"])
         balanced.sort(key=lambda value: preferred.index(value))
         lane = rng.choice(balanced[:min(2, len(balanced))])
-        melody_hold = candidate.get("source") in {"melody", "vocal", "instrumental"} and candidate.get("end_time_ms", 0) - candidate["time_ms"] >= 450
+        melody_hold = candidate.get("source") in {"melody", "vocal", "vocal_syllable", "instrumental"} and candidate.get("end_time_ms", 0) - candidate["time_ms"] >= 450
         is_hold = candidate["sustained"] and (melody_hold or index % (5 if difficulty == "easy" else 4) == 0)
         detected_end = time_to_beat(candidate.get("end_time_ms", 0), anchors) if candidate.get("end_time_ms") else 0
         end_beat = max(beat + 0.25, min(beat + 8.0, detected_end)) if melody_hold else beat + (2.0 if candidate["strength"] > 0.8 else 1.0)
@@ -202,7 +248,7 @@ def build_chart_set(song_id: str, candidates: list[Candidate], anchors: list[Anc
         "schemaVersion": 1,
         "songId": song_id,
         "revision": 1,
-        "generatorVersion": "rules-v4-adaptive-vocal-instrumental",
+        "generatorVersion": "rules-v7-post-filter-interlude-coverage",
         "laneCount": 4,
         "timing": {"meter": 4, "anchors": anchors},
         "charts": {

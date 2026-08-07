@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRaw } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import type { ChartNote, ChartSet, Difficulty, SongDetail } from "@beatforge/shared";
 import { beatToTimeMs, timeMsToBeat } from "@beatforge/shared";
 import { api, ApiError } from "../api";
 import EditorBoard from "../components/EditorBoard.vue";
 import WaveformStrip from "../components/WaveformStrip.vue";
-import { ArrowLeft, Check, ChevronDown, Clipboard, Copy, Gauge, Grid3X3, MousePointer2, Pause, Play, Redo2, Save, Scissors, Trash2, Undo2, Volume2, WandSparkles } from "lucide-vue-next";
+import { ArrowLeft, Check, ChevronDown, Clipboard, Copy, Gauge, Grid3X3, MousePointer2, Pause, Play, Redo2, Save, Scissors, Trash2, Undo2, Volume2, WandSparkles, ZoomIn, ZoomOut } from "lucide-vue-next";
 
 const route = useRoute();
 const router = useRouter();
@@ -59,7 +59,11 @@ const loopRatios = computed(() => {
   };
 });
 
-function cloneChart() { return structuredClone(chart.value!); }
+function cloneChart() { return structuredClone(toRaw(chart.value!)); }
+
+function adjustZoom(direction: -1 | 1) {
+  visibleBeats.value = Math.max(2, Math.min(64, visibleBeats.value + direction));
+}
 
 function mutate(action: () => void) {
   if (!chart.value) return;
@@ -158,7 +162,7 @@ function deleteSelected() {
   });
 }
 
-function copySelected() { clipboard.value = notes.value.filter((note) => selectedIds.value.includes(note.id)).map((note) => structuredClone(note)); }
+function copySelected() { clipboard.value = notes.value.filter((note) => selectedIds.value.includes(note.id)).map((note) => structuredClone(toRaw(note))); }
 function pasteSelected() {
   if (!clipboard.value.length) return;
   const minimum = Math.min(...clipboard.value.map((note) => note.beat));
@@ -321,9 +325,9 @@ onBeforeUnmount(() => {
         <div class="tool-divider" />
         <div class="tool-group compact-tools"><button :disabled="!history.length" title="撤销 Ctrl+Z" @click="undo"><Undo2 :size="17" /></button><button :disabled="!future.length" title="重做 Ctrl+Y" @click="redo"><Redo2 :size="17" /></button><button title="复制" @click="copySelected"><Copy :size="17" /></button><button title="粘贴" @click="pasteSelected"><Clipboard :size="17" /></button><button title="删除" @click="deleteSelected"><Trash2 :size="17" /></button></div>
         <div class="tool-divider" />
-        <label class="toolbar-select"><Grid3X3 :size="16" />吸附<select v-model.number="snap"><option :value="1">1/4</option><option :value="0.5">1/8</option><option :value="1/3">1/12</option><option :value="0.25">1/16</option></select><ChevronDown :size="14" /></label>
-        <label class="toolbar-range"><Gauge :size="16" />缩放<input v-model.number="visibleBeats" type="range" min="8" max="32" step="4" /></label>
-        <span class="shortcut-hint">SPACE 播放 · 1/2/3 工具 · DELETE 删除</span>
+        <label class="toolbar-select"><Grid3X3 :size="16" />吸附<select v-model.number="snap"><option :value="1">1/4</option><option :value="0.5">1/8</option><option :value="1/3">1/12</option><option :value="0.25">1/16</option><option :value="1/6">1/24</option><option :value="0.125">1/32</option></select><ChevronDown :size="14" /></label>
+        <div class="editor-zoom-control"><Gauge :size="16" /><button title="缩小" :disabled="visibleBeats >= 64" @click="adjustZoom(1)"><ZoomOut :size="15" /></button><input v-model.number="visibleBeats" aria-label="时间轴缩放" type="range" min="2" max="64" step="1" /><button title="放大" :disabled="visibleBeats <= 2" @click="adjustZoom(-1)"><ZoomIn :size="15" /></button><b>{{ visibleBeats }} 拍</b></div>
+        <span class="shortcut-hint">拖动音符移动 · Ctrl+滚轮缩放 · SPACE 播放 · 1/2/3 工具</span>
       </div>
 
       <div class="editor-workspace">
@@ -336,12 +340,12 @@ onBeforeUnmount(() => {
 
         <section class="timeline-panel">
           <div class="lane-labels"><span /><b>D</b><b>F</b><b>J</b><b>K</b></div>
-          <EditorBoard :notes="notes" :anchors="chart.timing.anchors" :current-beat="currentBeat" :snap="snap" :selected-ids="selectedIds" :tool="tool" :visible-beats="visibleBeats" @add="addNote" @select="selectNote" @clear-selection="selectedIds = []" @move="moveNote" />
+          <EditorBoard :notes="notes" :anchors="chart.timing.anchors" :current-beat="currentBeat" :snap="snap" :selected-ids="selectedIds" :tool="tool" :visible-beats="visibleBeats" @add="addNote" @select="selectNote" @clear-selection="selectedIds = []" @move="moveNote" @zoom="adjustZoom" />
           <div class="transport-bar"><button class="transport-play" @click="togglePlayback"><Pause v-if="playing" /><Play v-else /></button><span class="timecode">{{ Math.floor((audio?.currentTime ?? 0) / 60) }}:{{ String(Math.floor((audio?.currentTime ?? 0) % 60)).padStart(2, '0') }}.{{ String(Math.floor(((audio?.currentTime ?? 0) % 1) * 1000)).padStart(3, '0') }}</span><WaveformStrip :peaks="song.analysis?.waveform ?? []" :progress="waveformProgress" :loop-start="loopEnabled ? loopRatios.start : undefined" :loop-end="loopEnabled ? loopRatios.end : undefined" @seek="seekRatio" /><Volume2 :size="17" /></div>
         </section>
 
         <aside class="inspector note-inspector">
-          <section><span class="eyebrow">SELECTION</span><h3>{{ selectedIds.length ? `${selectedIds.length} 个音符` : '未选择音符' }}</h3><p v-if="!selectedIds.length" class="muted-copy">点击音符选择；按住 Ctrl 或 Shift 可多选。拖动音符可以改变轨道和节拍。</p></section>
+          <section><span class="eyebrow">SELECTION</span><h3>{{ selectedIds.length ? `${selectedIds.length} 个音符` : '未选择音符' }}</h3><p v-if="!selectedIds.length" class="muted-copy">直接按住音符拖动可改变轨道和节拍；拖动时会按照上方精度吸附。Ctrl 或 Shift 点击可多选。</p><p v-else class="muted-copy">拖动白色音符移动；也可以在下方直接输入轨道、Beat 和毫秒微调。</p></section>
           <section v-if="selectedNote" class="form-section"><label>类型<select :value="selectedNote.type" @change="updateSelected('type', ($event.target as HTMLSelectElement).value)"><option value="tap">单点 Tap</option><option value="hold">长按 Hold</option></select></label><label>轨道<input :value="selectedNote.lane" type="number" min="0" max="3" @change="updateSelected('lane', Number(($event.target as HTMLInputElement).value))" /></label><label>开始 Beat<input :value="selectedNote.beat" type="number" min="0" :step="snap" @change="updateSelected('beat', Number(($event.target as HTMLInputElement).value))" /></label><label>微调 (ms)<input :value="selectedNote.offsetMs ?? 0" type="number" min="-180" max="180" step="1" @change="updateSelected('offsetMs', Number(($event.target as HTMLInputElement).value))" /></label><label v-if="selectedNote.type === 'hold'">结束 Beat<input :value="selectedNote.endBeat" type="number" :min="selectedNote.beat + snap" :step="snap" @change="updateSelected('endBeat', Number(($event.target as HTMLInputElement).value))" /></label><button class="danger-button" @click="deleteSelected"><Trash2 :size="15" />删除所选</button></section>
           <section class="chart-stats"><span class="eyebrow">CHART DATA</span><div><span>单点</span><b>{{ notes.filter(n => n.type === 'tap').length }}</b></div><div><span>长按</span><b>{{ notes.filter(n => n.type === 'hold').length }}</b></div><div><span>总锚点</span><b>{{ chart.timing.anchors.length }}</b></div></section>
           <div v-if="error" class="alert error small">{{ error }}</div>

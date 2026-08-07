@@ -136,6 +136,134 @@ def build_melody_candidates(events: list[dict], source: str, vocal_activity: np.
     return candidates
 
 
+def activity_at(time_s: float, activity: np.ndarray | None, sample_rate: int = 44100,
+                hop_length: int = 512, radius_frames: int = 5) -> float:
+    if activity is None or not len(activity):
+        return 0.0
+    frame = int(time_s * sample_rate / hop_length)
+    start = max(0, frame - radius_frames)
+    end = min(len(activity), frame + radius_frames + 1)
+    return float(np.max(activity[start:end])) if end > start else 0.0
+
+
+def build_vocal_activity(vocals: np.ndarray, hop_length: int = 512) -> np.ndarray:
+    """Return a smoothed voice-presence curve robust to quiet syllables and stem bleed."""
+    rms = librosa.feature.rms(y=vocals, frame_length=2048, hop_length=hop_length)[0]
+    if not len(rms) or float(np.max(rms)) <= 1e-7:
+        return np.zeros_like(rms)
+    relative_db = librosa.amplitude_to_db(np.maximum(rms, 1e-8), ref=np.max)
+    confidence = np.clip((relative_db + 42.0) / 30.0, 0.0, 1.0)
+    kernel = np.ones(9, dtype=float) / 9.0
+    smoothed = np.convolve(confidence, kernel, mode="same")
+    return np.maximum(confidence * 0.65, smoothed)
+
+
+def build_vocal_syllable_candidates(vocals: np.ndarray, pitch_events: list[dict],
+                                    vocal_activity: np.ndarray, sample_rate: int = 44100,
+                                    hop_length: int = 512) -> list[Candidate]:
+    """Approximate sung syllable starts from vocal spectral flux plus pitch-note starts."""
+    vocal_onset = normalize_envelope(librosa.onset.onset_strength(
+        y=librosa.effects.preemphasis(vocals), sr=sample_rate, hop_length=hop_length,
+        aggregate=np.mean, n_mels=96, fmin=80, fmax=10000))
+    frames = librosa.onset.onset_detect(
+        onset_envelope=vocal_onset, sr=sample_rate, hop_length=hop_length,
+        units="frames", backtrack=False, pre_max=2, post_max=2,
+        pre_avg=6, post_avg=8, delta=0.045, wait=5)
+    detected_times = [float(value) for value in librosa.frames_to_time(
+        frames, sr=sample_rate, hop_length=hop_length)]
+    for event in pitch_events:
+        event_time = float(event["start_s"])
+        if not any(abs(event_time - value) <= 0.055 for value in detected_times):
+            detected_times.append(event_time)
+
+    candidates: list[Candidate] = []
+    last_time = -1.0
+    for time_s in sorted(detected_times):
+        if time_s - last_time < 0.085 or activity_at(time_s, vocal_activity, sample_rate, hop_length) < 0.20:
+            continue
+        frame = min(len(vocal_onset) - 1, max(0, int(time_s * sample_rate / hop_length)))
+        matching = min(pitch_events, key=lambda event: abs(float(event["start_s"]) - time_s), default=None)
+        close_pitch = matching is not None and abs(float(matching["start_s"]) - time_s) <= 0.09
+        end_time = float(matching["end_s"]) if close_pitch else time_s
+        duration = max(0.0, end_time - time_s)
+        candidates.append({
+            "time_ms": round(time_s * 1000.0, 3),
+            "end_time_ms": round(end_time * 1000.0, 3),
+            "strength": round(0.66 + 0.34 * float(vocal_onset[frame]), 5),
+            "sustained": duration >= 0.55,
+            "band": "melody",
+            "source": "vocal_syllable",
+            "priority": 1.34,
+            **({"pitch": int(matching["pitch"])} if close_pitch else {}),
+        })
+        last_time = time_s
+    return candidates
+
+
+def outside_vocal_region(time_ms: float, vocal_activity: np.ndarray | None,
+                         vocal_times_ms: list[float], sample_rate: int = 44100,
+                         hop_length: int = 512,
+                         vocal_regions_ms: list[tuple[float, float]] | None = None) -> bool:
+    time_s = time_ms / 1000.0
+    if any(abs(time_ms - vocal_time) < 190.0 for vocal_time in vocal_times_ms):
+        return False
+    level = activity_at(time_s, vocal_activity, sample_rate, hop_length, radius_frames=7)
+    # Demucs vocal stems retain quiet instrumental bleed. RMS alone must not
+    # classify an instrumental break as singing; require a transcribed vocal interval too.
+    return not any(
+        start_ms - 100.0 <= time_ms <= end_ms + 120.0 and level >= 0.16
+        for start_ms, end_ms in (vocal_regions_ms or [])
+    )
+
+
+def build_gap_beat_candidates(anchors: list[Anchor], vocal_activity: np.ndarray | None,
+                              vocal_times_ms: list[float], sample_rate: int = 44100,
+                              hop_length: int = 512,
+                              vocal_regions_ms: list[tuple[float, float]] | None = None) -> list[Candidate]:
+    candidates: list[Candidate] = []
+    for anchor in anchors:
+        time_ms = float(anchor["timeMs"])
+        if outside_vocal_region(time_ms, vocal_activity, vocal_times_ms, sample_rate, hop_length,
+                                vocal_regions_ms):
+            candidates.append({
+                "time_ms": time_ms,
+                "strength": round(0.52 + 0.34 * float(anchor.get("strength", 0.0)), 5),
+                "sustained": False,
+                "band": "low",
+                "source": "gap_beat",
+                "priority": 1.04 if anchor.get("downbeat") else 0.96,
+            })
+    return candidates
+
+
+def ensure_gap_coverage(candidates: list[Candidate], anchors: list[Anchor],
+                        radius_ms: float = 700.0) -> list[Candidate]:
+    """Add strong beat candidates to uncovered instrumental/quiet stretches."""
+    result = [dict(candidate) for candidate in candidates]
+    starts = [float(candidate["time_ms"]) for candidate in candidates]
+    sustained_regions = [
+        (float(candidate["time_ms"]), float(candidate.get("end_time_ms", candidate["time_ms"])))
+        for candidate in candidates
+        if float(candidate.get("end_time_ms", candidate["time_ms"])) - float(candidate["time_ms"]) >= 450.0
+    ]
+    for anchor in anchors:
+        time_ms = float(anchor["timeMs"])
+        near_candidate = any(abs(time_ms - candidate_time) <= radius_ms for candidate_time in starts)
+        covered_by_hold = any(start_ms <= time_ms <= end_ms for start_ms, end_ms in sustained_regions)
+        if near_candidate or covered_by_hold:
+            continue
+        result.append({
+            "time_ms": time_ms,
+            "strength": 0.9,
+            "sustained": False,
+            "band": "low",
+            "source": "gap_fill",
+            "priority": 1.24 if anchor.get("downbeat") else 1.16,
+        })
+        starts.append(time_ms)
+    return result
+
+
 def merge_candidates(rhythm: list[Candidate], melody: list[Candidate], tolerance_ms: float = 40.0) -> list[Candidate]:
     merged: list[Candidate] = []
     for candidate in sorted([*rhythm, *melody], key=lambda value: value["time_ms"]):
@@ -143,7 +271,8 @@ def merge_candidates(rhythm: list[Candidate], melody: list[Candidate], tolerance
             merged.append(dict(candidate))
             continue
         previous = merged[-1]
-        rank = {"vocal": 3, "instrumental": 2, "melody": 2, "rhythm": 1}
+        rank = {"vocal_syllable": 4, "vocal": 3, "instrumental": 2,
+                "melody": 2, "gap_fill": 1, "gap_beat": 1, "rhythm": 1}
         melody_event = candidate if rank.get(candidate.get("source", "rhythm"), 1) > rank.get(previous.get("source", "rhythm"), 1) else previous
         if rank.get(melody_event.get("source", "rhythm"), 1) > 1:
             previous["time_ms"] = melody_event["time_ms"]
@@ -275,8 +404,7 @@ def main() -> None:
         rms = librosa.feature.rms(y=harmonic, frame_length=2048, hop_length=hop_length)[0]
         rms_norm = normalize_envelope(rms)
         section_energy = normalize_envelope(librosa.feature.rms(y=y, frame_length=2048, hop_length=hop_length)[0])
-        vocal_activity = normalize_envelope(
-            librosa.feature.rms(y=vocals, frame_length=2048, hop_length=hop_length)[0]) if vocals is not None else None
+        vocal_activity = build_vocal_activity(vocals, hop_length) if vocals is not None else None
         rhythm_candidates: list[Candidate] = []
         for onset_frame, onset_time in zip(onset_frames, onset_times):
             frame = int(onset_frame)
@@ -296,13 +424,31 @@ def main() -> None:
                 "priority": round(0.78 + 0.38 * float(section_energy[min(frame, len(section_energy) - 1)]), 4),
             })
         if vocals is not None:
-            melody_candidates = [
-                *build_melody_candidates(vocal_events, "vocal", vocal_activity, sample_rate, hop_length),
-                *build_melody_candidates(instrumental_events, "instrumental", vocal_activity, sample_rate, hop_length),
+            vocal_candidates = build_vocal_syllable_candidates(
+                vocals, vocal_events, vocal_activity, sample_rate, hop_length)
+            vocal_times_ms = [float(candidate["time_ms"]) for candidate in vocal_candidates]
+            vocal_regions_ms = [
+                (float(event["start_s"]) * 1000.0, float(event["end_s"]) * 1000.0)
+                for event in vocal_events
             ]
+            gap_rhythm_candidates = [
+                candidate for candidate in rhythm_candidates
+                if outside_vocal_region(float(candidate["time_ms"]), vocal_activity, vocal_times_ms,
+                                        sample_rate, hop_length, vocal_regions_ms)
+            ]
+            gap_beat_candidates = build_gap_beat_candidates(
+                anchors, vocal_activity, vocal_times_ms, sample_rate, hop_length, vocal_regions_ms)
+            instrumental_candidates = [
+                candidate for candidate in build_melody_candidates(
+                    instrumental_events, "instrumental", vocal_activity, sample_rate, hop_length)
+                if outside_vocal_region(float(candidate["time_ms"]), vocal_activity, vocal_times_ms,
+                                        sample_rate, hop_length, vocal_regions_ms)
+            ]
+            rhythm_candidates = [*gap_rhythm_candidates, *gap_beat_candidates]
+            melody_candidates = [*vocal_candidates, *instrumental_candidates]
         else:
             melody_candidates = build_melody_candidates(instrumental_events, "melody", None, sample_rate, hop_length)
-        candidates = merge_candidates(rhythm_candidates, melody_candidates)
+        candidates = ensure_gap_coverage(merge_candidates(rhythm_candidates, melody_candidates), anchors)
 
         progress(82, "生成三档 AI 融合谱面")
         digest = hashlib.sha256()
@@ -316,6 +462,12 @@ def main() -> None:
             "analysis": {
                 "bpm": round(tempo, 3), "confidence": round(confidence, 4),
                 "durationMs": round(duration_ms), "waveform": waveform_peaks(y), "warnings": warnings,
+                "strategy": "vocal-syllable-gap-rhythm",
+                "candidateStats": {
+                    "vocalSyllables": sum(1 for candidate in candidates if candidate.get("source") == "vocal_syllable"),
+                    "gapRhythm": sum(1 for candidate in candidates if candidate.get("source") in {"rhythm", "gap_beat", "gap_fill"}),
+                    "instrumental": sum(1 for candidate in candidates if candidate.get("source") in {"instrumental", "melody"}),
+                },
             },
         }
         with open(args.output, "w", encoding="utf-8") as target:
