@@ -20,7 +20,7 @@ let pollTimer: number | undefined;
 let eventSource: EventSource | undefined;
 
 const readyCount = computed(() => songs.value.filter((song) => song.status === "ready").length);
-const totalCharts = computed(() => readyCount.value * 3);
+const totalCharts = computed(() => readyCount.value * 4);
 
 async function loadSongs(silent = false) {
   if (!silent) loading.value = true;
@@ -84,7 +84,8 @@ function formatDuration(ms: number) {
 }
 
 const difficulties: { id: Difficulty; label: string }[] = [
-  { id: "easy", label: "EASY" }, { id: "normal", label: "NORMAL" }, { id: "hard", label: "HARD" },
+  { id: "easy", label: "EASY" }, { id: "normal", label: "NORMAL" },
+  { id: "hard", label: "HARD" }, { id: "ultra", label: "ULTRA" },
 ];
 
 onMounted(() => {
@@ -102,7 +103,7 @@ onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer); eventSource?.cl
       <div class="hero-copy">
         <span class="eyebrow"><Sparkles :size="14" /> AUDIO TO PLAYABLE</span>
         <h1>把每一首歌，<br /><em>铸成一场节奏。</em></h1>
-        <p>上传你拥有使用权的音频。BeatForge 会分析节拍、生成三档四轨谱面，并把最后的决定权交给你的编辑器。</p>
+        <p>上传你拥有使用权的音频。BeatForge 会分析节拍、生成四档四轨谱面，并把最后的决定权交给你的编辑器。</p>
         <button class="primary-button large" @click="uploadOpen = true"><Plus :size="19" />上传一首歌<ArrowRight :size="18" /></button>
       </div>
       <div class="hero-visual" aria-hidden="true">
@@ -142,7 +143,7 @@ onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer); eventSource?.cl
           <div class="song-main">
             <div class="song-title-row"><div><h3>{{ song.title }}</h3><p>{{ song.artist || '未知艺术家' }} · {{ song.originalName }}</p></div><span class="state" :class="song.status">{{ song.status === 'ready' ? '已就绪' : song.status === 'failed' ? '失败' : '分析中' }}</span></div>
             <div v-if="song.status === 'ready'" class="difficulty-row">
-              <button v-for="difficulty in difficulties" :key="difficulty.id" @click="router.push(`/play/${song.id}/${difficulty.id}`)">
+              <button v-for="difficulty in difficulties" :key="difficulty.id" :class="{ ultra: difficulty.id === 'ultra' }" @click="router.push(`/play/${song.id}/${difficulty.id}`)">
                 <span>{{ difficulty.label }}</span><b>{{ song.bestScores[difficulty.id]?.score.toLocaleString() ?? '—' }}</b><Play :size="14" />
               </button>
             </div>
@@ -167,7 +168,7 @@ onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer); eventSource?.cl
             <strong>{{ file ? file.name : '拖入音频，或点击选择' }}</strong><span>MP3 / WAV / FLAC / OGG / M4A · 最大 200 MB</span>
           </label>
           <div class="form-grid"><label>歌曲名<input v-model="title" placeholder="自动读取文件名" maxlength="120" /></label><label>艺术家<input v-model="artist" placeholder="可选" maxlength="120" /></label></div>
-          <div class="upload-note"><Sparkles :size="16" /><p><b>上传后会自动生成三档谱面。</b><br />分析结果只是初稿，你可以随时校准节拍并编辑音符。</p></div>
+          <div class="upload-note"><Sparkles :size="16" /><p><b>上传后会自动生成四档谱面，包含观赏级 Ultra。</b><br />分析结果只是初稿，你可以随时校准节拍并编辑音符。</p></div>
           <footer><button class="ghost-button" @click="uploadOpen = false">取消</button><button class="primary-button" :disabled="!file || uploading" @click="submitUpload">{{ uploading ? '正在上传…' : '上传并开始分析' }}</button></footer>
         </section>
       </div>

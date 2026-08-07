@@ -1,4 +1,5 @@
-export type Difficulty = "easy" | "normal" | "hard";
+export const DIFFICULTIES = ["easy", "normal", "hard", "ultra"] as const;
+export type Difficulty = typeof DIFFICULTIES[number];
 export type NoteType = "tap" | "hold";
 export type SongStatus = "queued" | "analyzing" | "ready" | "failed";
 export type JobStatus = "queued" | "running" | "complete" | "failed";
@@ -138,6 +139,26 @@ export function snapBeat(beat: number, step: number): number {
   return Math.round(beat / step) * step;
 }
 
+/** Keeps chart documents created before Ultra mode playable until they are regenerated. */
+export function ensureUltraChart(chartSet: ChartSet): ChartSet {
+  const charts = chartSet.charts as Partial<Record<Difficulty, DifficultyChart>>;
+  if (charts.ultra) return chartSet;
+  const hardNotes = charts.hard?.notes ?? [];
+  const notes = hardNotes.map((note) => structuredClone(note));
+  for (let index = 0; index < hardNotes.length; index += 6) {
+    const source = hardNotes[index];
+    if (!source || source.type !== "tap") continue;
+    const lane = ((source.lane + 2) % 4) as ChartNote["lane"];
+    const laneBlocked = hardNotes.some((note) => note.lane === lane &&
+      (Math.abs(note.beat - source.beat) < 0.0001 ||
+        (note.type === "hold" && note.beat <= source.beat && (note.endBeat ?? note.beat) >= source.beat)));
+    if (!laneBlocked) notes.push({ ...structuredClone(source), id: `${source.id}-ultra`, lane });
+  }
+  notes.sort((a, b) => a.beat - b.beat || a.lane - b.lane);
+  charts.ultra = { notes };
+  return chartSet;
+}
+
 export function validateChartSet(chartSet: ChartSet): string[] {
   const errors: string[] = [];
   if (chartSet.schemaVersion !== 1) errors.push("Unsupported schema version");
@@ -148,7 +169,7 @@ export function validateChartSet(chartSet: ChartSet): string[] {
     const b = chartSet.timing.anchors[i];
     if (b.beat <= a.beat || b.timeMs <= a.timeMs) errors.push("Timing anchors must increase");
   }
-  for (const difficulty of ["easy", "normal", "hard"] as Difficulty[]) {
+  for (const difficulty of DIFFICULTIES) {
     for (const note of chartSet.charts[difficulty]?.notes ?? []) {
       if (!Number.isFinite(note.beat) || note.beat < 0) errors.push(`${difficulty}: invalid beat`);
       if (note.lane < 0 || note.lane > 3) errors.push(`${difficulty}: invalid lane`);

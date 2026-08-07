@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { beatToTimeMs, snapBeat, timeMsToBeat, validateChartSet, type ChartSet } from "./index.js";
+import { beatToTimeMs, ensureUltraChart, snapBeat, timeMsToBeat, validateChartSet, type ChartSet } from "./index.js";
 
 const anchors = [
   { beat: 0, timeMs: 100 },
@@ -32,9 +32,21 @@ describe("chart validation", () => {
         easy: { notes: [{ id: "n", lane: 0, type: "hold", beat: 1, endBeat: 1 }] },
         normal: { notes: [] },
         hard: { notes: [] },
+        ultra: { notes: [] },
       },
       warnings: [],
     } as ChartSet;
     expect(validateChartSet(chart)).toContain("easy: invalid hold");
+  });
+
+  it("backfills Ultra for legacy chart documents", () => {
+    const legacy = {
+      schemaVersion: 1, songId: "song", revision: 1, generatorVersion: "legacy", laneCount: 4,
+      timing: { meter: 4, anchors },
+      charts: { easy: { notes: [] }, normal: { notes: [] }, hard: { notes: [
+        { id: "hard-1", lane: 0, type: "tap", beat: 1 },
+      ] } }, warnings: [],
+    } as unknown as ChartSet;
+    expect(ensureUltraChart(legacy).charts.ultra.notes).toHaveLength(2);
   });
 });

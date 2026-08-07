@@ -307,7 +307,7 @@ onBeforeUnmount(() => {
         <button class="icon-button" @click="router.push('/')"><ArrowLeft /></button>
         <div class="editor-song"><span class="eyebrow">CHART EDITOR</span><h2>{{ song.title }}</h2><p>{{ song.artist || '未知艺术家' }}</p></div>
         <div class="difficulty-tabs">
-          <button v-for="item in (['easy','normal','hard'] as Difficulty[])" :key="item" :class="{ active: difficulty === item }" @click="difficulty = item; selectedIds = []">
+          <button v-for="item in (['easy','normal','hard','ultra'] as Difficulty[])" :key="item" :class="{ active: difficulty === item, ultra: item === 'ultra' }" @click="difficulty = item; selectedIds = []">
             {{ item }}<b>{{ chart.charts[item].notes.length }}</b>
           </button>
         </div>

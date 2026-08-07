@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
-import type { AnalysisJob, ChartSet, Difficulty, ScoreSummary, SongDetail, SongSummary } from "@beatforge/shared";
+import { ensureUltraChart, type AnalysisJob, type ChartSet, type Difficulty, type ScoreSummary, type SongDetail, type SongSummary } from "@beatforge/shared";
 
 type Row = Record<string, unknown>;
 
@@ -213,7 +213,7 @@ export class Database {
 
   getChartSet(songId: string): ChartSet | null {
     const row = this.db.prepare("SELECT document_json FROM chart_sets WHERE song_id=?").get(songId) as Row | undefined;
-    return row ? JSON.parse(String(row.document_json)) as ChartSet : null;
+    return row ? ensureUltraChart(JSON.parse(String(row.document_json)) as ChartSet) : null;
   }
 
   updateChartSet(songId: string, baseRevision: number, document: ChartSet): ChartSet | "conflict" | null {

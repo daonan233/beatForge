@@ -12,7 +12,7 @@ function chart(): ChartSet {
   return {
     schemaVersion: 1, songId: "song", revision: 1, generatorVersion: "test", laneCount: 4,
     timing: { meter: 4, anchors: [{ beat: 0, timeMs: 0 }, { beat: 1, timeMs: 500 }] },
-    charts: { easy: { notes: [] }, normal: { notes: [] }, hard: { notes: [] } }, warnings: [],
+    charts: { easy: { notes: [] }, normal: { notes: [] }, hard: { notes: [] }, ultra: { notes: [] } }, warnings: [],
   };
 }
 

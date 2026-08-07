@@ -8,7 +8,7 @@ import { pipeline } from "node:stream/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { validateChartSet, type ChartSet, type Difficulty, type ScoreSummary } from "@beatforge/shared";
+import { DIFFICULTIES, validateChartSet, type ChartSet, type Difficulty, type ScoreSummary } from "@beatforge/shared";
 import { config } from "./config.js";
 import { Database } from "./database.js";
 import { JobRunner } from "./job-runner.js";
@@ -154,7 +154,7 @@ app.post<{ Params: { id: string }; Body: { difficulty?: Difficulty; revision?: n
   const { difficulty, revision, result } = request.body ?? {};
   const chart = database.getChartSet(request.params.id);
   if (!chart) return reply.code(404).send({ error: "谱面不存在" });
-  if (!difficulty || !["easy", "normal", "hard"].includes(difficulty) || revision !== chart.revision || !result) {
+  if (!difficulty || !DIFFICULTIES.includes(difficulty) || revision !== chart.revision || !result) {
     return reply.code(422).send({ error: "成绩与当前谱面版本不匹配" });
   }
   const sane = [result.score, result.accuracy, result.maxCombo, result.perfect, result.great, result.good, result.miss]

@@ -4,7 +4,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from generator import build_chart_set, generate_chart
+from generator import beat_to_time, build_chart_set, generate_chart
 
 
 class GeneratorTests(unittest.TestCase):
@@ -25,7 +25,7 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(first, second)
 
     def test_note_invariants(self):
-        for difficulty in ("easy", "normal", "hard"):
+        for difficulty in ("easy", "normal", "hard", "ultra"):
             notes = generate_chart(difficulty, self.candidates, self.anchors, "seed")
             self.assertTrue(notes)
             self.assertEqual(notes, sorted(notes, key=lambda note: (note["beat"], note["lane"])))
@@ -40,6 +40,25 @@ class GeneratorTests(unittest.TestCase):
         easy = generate_chart("easy", self.candidates, self.anchors, "seed")
         hard = generate_chart("hard", self.candidates, self.anchors, "seed")
         self.assertLessEqual(len(easy), len(hard))
+
+    def test_ultra_is_at_least_as_dense_as_hard(self):
+        hard = generate_chart("hard", self.candidates, self.anchors, "seed")
+        ultra = generate_chart("ultra", self.candidates, self.anchors, "seed")
+        self.assertGreaterEqual(len(ultra), len(hard))
+        self.assertGreater(sum(1 for note in ultra if note["beat"] in {
+            other["beat"] for other in ultra if other["id"] != note["id"]
+        }), 0)
+
+    def test_ultra_preserves_real_detector_timestamps(self):
+        candidates = [
+            {"time_ms": 137.0 + index * 37.0, "strength": 0.7, "sustained": False,
+             "band": "high", "source": "rhythm"}
+            for index in range(12)
+        ]
+        notes = generate_chart("ultra", candidates, self.anchors, "real-onsets")
+        generated_times = [beat_to_time(note["beat"], self.anchors) + note.get("offsetMs", 0) for note in notes]
+        for candidate in candidates:
+            self.assertTrue(any(abs(time_ms - candidate["time_ms"]) < 0.1 for time_ms in generated_times))
 
     def test_off_grid_onset_is_preserved_instead_of_discarded(self):
         candidates = [{"time_ms": 137.0, "strength": 1.0, "sustained": False,

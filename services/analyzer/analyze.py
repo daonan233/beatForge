@@ -423,6 +423,7 @@ def main() -> None:
                 "source": "rhythm",
                 "priority": round(0.78 + 0.38 * float(section_energy[min(frame, len(section_energy) - 1)]), 4),
             })
+        ultra_rhythm_candidates = list(rhythm_candidates)
         if vocals is not None:
             vocal_candidates = build_vocal_syllable_candidates(
                 vocals, vocal_events, vocal_activity, sample_rate, hop_length)
@@ -438,24 +439,30 @@ def main() -> None:
             ]
             gap_beat_candidates = build_gap_beat_candidates(
                 anchors, vocal_activity, vocal_times_ms, sample_rate, hop_length, vocal_regions_ms)
+            all_instrumental_candidates = build_melody_candidates(
+                instrumental_events, "instrumental", vocal_activity, sample_rate, hop_length)
             instrumental_candidates = [
-                candidate for candidate in build_melody_candidates(
-                    instrumental_events, "instrumental", vocal_activity, sample_rate, hop_length)
+                candidate for candidate in all_instrumental_candidates
                 if outside_vocal_region(float(candidate["time_ms"]), vocal_activity, vocal_times_ms,
                                         sample_rate, hop_length, vocal_regions_ms)
             ]
             rhythm_candidates = [*gap_rhythm_candidates, *gap_beat_candidates]
             melody_candidates = [*vocal_candidates, *instrumental_candidates]
+            ultra_melody_candidates = [*vocal_candidates, *all_instrumental_candidates]
         else:
             melody_candidates = build_melody_candidates(instrumental_events, "melody", None, sample_rate, hop_length)
+            ultra_melody_candidates = list(melody_candidates)
         candidates = ensure_gap_coverage(merge_candidates(rhythm_candidates, melody_candidates), anchors)
+        ultra_candidates = ensure_gap_coverage(
+            merge_candidates(ultra_rhythm_candidates, ultra_melody_candidates, tolerance_ms=12.0), anchors)
 
-        progress(82, "生成三档 AI 融合谱面")
+        progress(82, "生成四档 AI 融合谱面")
         digest = hashlib.sha256()
         with open(args.input, "rb") as source:
             while block := source.read(1024 * 1024):
                 digest.update(block)
-        chart_set = build_chart_set(args.song_id, candidates, anchors, warnings, digest.hexdigest())
+        chart_set = build_chart_set(
+            args.song_id, candidates, anchors, warnings, digest.hexdigest(), ultra_candidates=ultra_candidates)
         progress(93, "整理波形预览")
         result = {
             "chartSet": chart_set,
@@ -467,6 +474,7 @@ def main() -> None:
                     "vocalSyllables": sum(1 for candidate in candidates if candidate.get("source") == "vocal_syllable"),
                     "gapRhythm": sum(1 for candidate in candidates if candidate.get("source") in {"rhythm", "gap_beat", "gap_fill"}),
                     "instrumental": sum(1 for candidate in candidates if candidate.get("source") in {"instrumental", "melody"}),
+                    "ultraRealOnsets": len(ultra_candidates),
                 },
             },
         }

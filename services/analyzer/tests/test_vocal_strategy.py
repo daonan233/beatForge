@@ -6,7 +6,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from analyze import build_gap_beat_candidates, ensure_gap_coverage, outside_vocal_region
+from analyze import build_gap_beat_candidates, ensure_gap_coverage, merge_candidates, outside_vocal_region
 from generator import generate_chart
 
 
@@ -64,6 +64,24 @@ class VocalStrategyTests(unittest.TestCase):
         ]
         notes = generate_chart("hard", candidates, self.anchors, "vocal-seed")
         self.assertEqual(len(notes), len(candidates))
+
+    def test_ultra_chart_keeps_very_rapid_vocal_syllables(self):
+        candidates = [
+            {"time_ms": 500.0 + index * 80.0, "strength": 0.72,
+             "sustained": False, "band": "melody", "source": "vocal_syllable",
+             "priority": 1.34}
+            for index in range(10)
+        ]
+        notes = generate_chart("ultra", candidates, self.anchors, "ultra-vocal-seed")
+        self.assertGreaterEqual(len(notes), len(candidates))
+
+    def test_ultra_merge_keeps_close_independent_onsets(self):
+        rhythm = [{"time_ms": 1000.0, "strength": 0.8, "sustained": False,
+                   "band": "high", "source": "rhythm"}]
+        melody = [{"time_ms": 1022.0, "strength": 0.8, "sustained": False,
+                   "band": "melody", "source": "vocal_syllable"}]
+        self.assertEqual(len(merge_candidates(rhythm, melody)), 1)
+        self.assertEqual(len(merge_candidates(rhythm, melody, tolerance_ms=12.0)), 2)
 
 
 if __name__ == "__main__":

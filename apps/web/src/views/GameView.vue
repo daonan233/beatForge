@@ -7,7 +7,7 @@ import { api } from "../api";
 import { useSettings } from "../composables/settings";
 import GameBoard, { type GameRenderNote } from "../components/GameBoard.vue";
 import { ArrowLeft, Bot, Pause, Play, RotateCcw, Settings2, Trophy } from "lucide-vue-next";
-import { classifyTiming, judgementWeights, normalizedScore, type Grade } from "../game/scoring";
+import { classifyTiming, judgementWeights, judgementWindowsForDifficulty, normalizedScore, type Grade } from "../game/scoring";
 import { countdownNumber, countdownRenderTimeMs, GAME_COUNTDOWN_SECONDS } from "../game/countdown";
 import { HitSoundPlayer, type HitSoundKind } from "../game/hit-sound";
 import { approachDurationMs, clampScrollSpeed } from "../game/scroll";
@@ -21,7 +21,7 @@ interface RuntimeNote extends GameRenderNote {
 const route = useRoute();
 const router = useRouter();
 const songId = String(route.params.songId);
-const difficulty = (["easy", "normal", "hard"].includes(String(route.params.difficulty)) ? String(route.params.difficulty) : "normal") as Difficulty;
+const difficulty = (["easy", "normal", "hard", "ultra"].includes(String(route.params.difficulty)) ? String(route.params.difficulty) : "normal") as Difficulty;
 const { settings } = useSettings();
 const song = ref<SongDetail>();
 const chart = ref<ChartSet>();
@@ -65,7 +65,8 @@ const totalEvents = computed(() => notes.value.reduce((sum, note) => sum + (note
 const judgedEvents = computed(() => counts.value.perfect + counts.value.great + counts.value.good + counts.value.miss);
 const score = computed(() => normalizedScore(weightedScore.value, totalEvents.value));
 const accuracy = computed(() => judgedEvents.value ? weightedScore.value / judgedEvents.value * 100 : 100);
-const difficultyLabel = { easy: "EASY", normal: "NORMAL", hard: "HARD" }[difficulty];
+const difficultyLabel = { easy: "EASY", normal: "NORMAL", hard: "HARD", ultra: "ULTRA" }[difficulty];
+const timingWindows = judgementWindowsForDifficulty(difficulty);
 const progress = computed(() => buffer ? Math.max(0, Math.min(1, currentTimeMs.value / (buffer.duration * 1000))) : 0);
 
 function adjustSpeed(delta: number) {
@@ -173,7 +174,7 @@ function hitLane(lane: number) {
   const candidates = notes.value.filter((note) => note.lane === lane && note.head === "pending");
   const note = candidates.sort((a, b) => Math.abs(a.startMs - playheadTimeMs) - Math.abs(b.startMs - playheadTimeMs))[0];
   if (!note) return;
-  const grade = classifyTiming(playheadTimeMs - note.startMs);
+  const grade = classifyTiming(playheadTimeMs - note.startMs, timingWindows);
   if (grade === "miss") return;
   note.head = grade;
   playNoteHit(note, grade, note.type === "hold" ? "holdHead" : "tap");
@@ -185,7 +186,7 @@ function hitLane(lane: number) {
 function releaseLane(lane: number) {
   const note = notes.value.find((item) => item.lane === lane && item.status === "holding" && item.tail === "pending");
   if (!note || note.endMs == null) return;
-  const grade = classifyTiming(playheadTimeMs - note.endMs);
+  const grade = classifyTiming(playheadTimeMs - note.endMs, timingWindows);
   note.tail = grade; note.status = grade === "miss" ? "missed" : "done";
   playNoteHit(note, grade, "holdTail");
   record(grade);
@@ -216,7 +217,7 @@ function onKeyup(event: KeyboardEvent) {
 
 function processMisses() {
   for (const note of notes.value) {
-    if (note.head === "pending" && playheadTimeMs > note.startMs + 140) {
+    if (note.head === "pending" && playheadTimeMs > note.startMs + timingWindows.good) {
       note.head = "miss"; note.status = note.type === "hold" ? "holding" : "missed"; record("miss");
       if (note.type === "hold") { note.tail = "miss"; note.status = "missed"; record("miss"); }
     }
@@ -352,7 +353,7 @@ onBeforeUnmount(() => {
         <div v-else-if="ready && !running && !paused && !finished" class="game-overlay start-overlay"><span class="eyebrow">READY TO PLAY</span><h2>{{ difficultyLabel }}</h2><p>{{ autoplay ? 'Autoplay 将自动演示全部音符' : `使用 ${keyLabels.join(' · ')} 击打四条轨道` }}</p><button class="start-button" @click="startGame"><Play :size="24" />开始</button><small>{{ autoplay ? 'AUTO 成绩不会保存 · A 切换' : '空格键开始 · A 开关 Autoplay' }}</small></div>
         <div v-else-if="paused" class="game-overlay"><Pause :size="30" /><h2>已暂停</h2><p>保持节奏，准备好再继续。</p><div class="overlay-actions"><button class="start-button small" @click="resumeGame"><Play :size="19" />继续</button><button class="ghost-button" @click="restartGame"><RotateCcw :size="17" />重新开始</button></div></div>
       </main>
-      <aside class="game-metrics right"><div><small>CHART</small><strong>v{{ chart?.revision ?? 0 }}</strong></div><div><small>NOTES</small><strong>{{ totalEvents }}</strong></div><div class="key-reminder"><span v-for="key in keyLabels" :key="key">{{ key }}</span></div><button class="autoplay-toggle" :class="{ active: autoplay }" :disabled="running" @click="toggleAutoplay"><Bot :size="17" /><span><small>AUTOPLAY</small><b>{{ autoplay ? 'ON' : 'OFF' }}</b></span><i>A</i></button><div class="game-speed-control"><button aria-label="降低下落速度" :disabled="settings.scrollSpeed <= 1" @click="adjustSpeed(-1)">−</button><span><small>SPEED</small><b>{{ settings.scrollSpeed }}</b><i>/ 10</i></span><button aria-label="提高下落速度" :disabled="settings.scrollSpeed >= 10" @click="adjustSpeed(1)">＋</button></div><div class="game-hit-volume"><label for="game-hit-volume"><small>HIT VOLUME</small><b>{{ Math.round(settings.hitVolume * 100) }}%</b></label><input id="game-hit-volume" v-model.number="settings.hitVolume" aria-label="打击音量" type="range" min="0" max="1" step="0.01" /></div><p><Settings2 :size="15" />延迟 {{ settings.latencyMs }} ms<br />Autoplay 不记录最佳成绩</p></aside>
+      <aside class="game-metrics right"><div><small>CHART</small><strong>v{{ chart?.revision ?? 0 }}</strong></div><div><small>NOTES</small><strong>{{ totalEvents }}</strong></div><div v-if="difficulty === 'ultra'" class="ultra-window"><small>STRICT WINDOWS</small><b>±25 / 55 / 85 ms</b></div><div class="key-reminder"><span v-for="key in keyLabels" :key="key">{{ key }}</span></div><button class="autoplay-toggle" :class="{ active: autoplay }" :disabled="running" @click="toggleAutoplay"><Bot :size="17" /><span><small>AUTOPLAY</small><b>{{ autoplay ? 'ON' : 'OFF' }}</b></span><i>A</i></button><div class="game-speed-control"><button aria-label="降低下落速度" :disabled="settings.scrollSpeed <= 1" @click="adjustSpeed(-1)">−</button><span><small>SPEED</small><b>{{ settings.scrollSpeed }}</b><i>/ 10</i></span><button aria-label="提高下落速度" :disabled="settings.scrollSpeed >= 10" @click="adjustSpeed(1)">＋</button></div><div class="game-hit-volume"><label for="game-hit-volume"><small>HIT VOLUME</small><b>{{ Math.round(settings.hitVolume * 100) }}%</b></label><input id="game-hit-volume" v-model.number="settings.hitVolume" aria-label="打击音量" type="range" min="0" max="1" step="0.01" /></div><p><Settings2 :size="15" />延迟 {{ settings.latencyMs }} ms<br />Autoplay 不记录最佳成绩</p></aside>
     </div>
 
     <Transition name="fade">
