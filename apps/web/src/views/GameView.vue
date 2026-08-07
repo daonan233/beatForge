@@ -8,7 +8,9 @@ import { useSettings } from "../composables/settings";
 import GameBoard, { type GameRenderNote } from "../components/GameBoard.vue";
 import { ArrowLeft, Bot, Pause, Play, RotateCcw, Settings2, Trophy } from "lucide-vue-next";
 import { classifyTiming, judgementWeights, normalizedScore, type Grade } from "../game/scoring";
-import { clampScrollSpeed } from "../game/scroll";
+import { countdownNumber, countdownRenderTimeMs, GAME_COUNTDOWN_SECONDS } from "../game/countdown";
+import { HitSoundPlayer, type HitSoundKind } from "../game/hit-sound";
+import { approachDurationMs, clampScrollSpeed } from "../game/scroll";
 
 interface RuntimeNote extends GameRenderNote {
   source: ChartNote;
@@ -33,6 +35,7 @@ const paused = ref(false);
 const finished = ref(false);
 const autoplay = ref(false);
 const autoplayUsed = ref(false);
+const countdown = ref<number | null>(null);
 const currentTimeMs = ref(-1000);
 const pressed = ref([false, false, false, false]);
 const judgement = ref("");
@@ -47,8 +50,10 @@ let source: AudioBufferSourceNode | undefined;
 let gain: GainNode | undefined;
 let contextStart = 0;
 let playbackOffsetMs = 0;
+let firstNoteTimeMs = 0;
 let animationFrame = 0;
 let judgementTimer: number | undefined;
+let hitSounds: HitSoundPlayer | undefined;
 let completing = false;
 let playheadTimeMs = -1000;
 let lastHudUpdate = 0;
@@ -103,6 +108,11 @@ function record(grade: Grade) {
   showJudgement(grade);
 }
 
+function playNoteHit(note: RuntimeNote, grade: Grade, kind: HitSoundKind) {
+  if (grade === "miss") return;
+  hitSounds?.play({ kind, lane: note.lane, grade, volume: settings.hitVolume });
+}
+
 function resetState() {
   for (const note of notes.value) {
     note.head = "pending"; note.tail = note.type === "hold" ? "pending" : undefined; note.status = "pending";
@@ -110,11 +120,11 @@ function resetState() {
   counts.value = { perfect: 0, great: 0, good: 0, miss: 0 };
   weightedScore.value = 0; combo.value = 0; maxCombo.value = 0; currentTimeMs.value = -1000;
   playheadTimeMs = -1000; lastHudUpdate = 0;
-  autoplayUsed.value = false; clearAutoLaneTimers();
+  autoplayUsed.value = false; countdown.value = null; clearAutoLaneTimers();
   finished.value = false; completing = false; playbackOffsetMs = 0; heldCodes.clear(); pressed.value = [false, false, false, false];
 }
 
-function createSource(offsetMs: number) {
+function createSource(offsetMs: number, delaySeconds = 0.08) {
   if (!context || !buffer) return;
   source?.stop();
   source = context.createBufferSource();
@@ -122,7 +132,7 @@ function createSource(offsetMs: number) {
   gain.gain.value = settings.volume;
   source.buffer = buffer;
   source.connect(gain).connect(context.destination);
-  contextStart = context.currentTime + 0.08;
+  contextStart = context.currentTime + delaySeconds;
   playbackOffsetMs = offsetMs;
   source.start(contextStart, Math.max(0, offsetMs / 1000));
   running.value = true; paused.value = false;
@@ -131,13 +141,20 @@ function createSource(offsetMs: number) {
 async function startGame() {
   if (!context || !buffer) return;
   await context.resume();
+  await hitSounds?.prepare();
   if (finished.value) resetState();
   if (autoplay.value) autoplayUsed.value = true;
-  createSource(playbackOffsetMs);
+  countdown.value = GAME_COUNTDOWN_SECONDS;
+  createSource(playbackOffsetMs, GAME_COUNTDOWN_SECONDS);
 }
 
 function pauseGame() {
   if (!context || !running.value) return;
+  if (countdown.value != null) {
+    source?.stop(); source = undefined; running.value = false; countdown.value = null;
+    clearAutoLaneTimers(); pressed.value = [false, false, false, false];
+    return;
+  }
   playbackOffsetMs = Math.max(0, (context.currentTime - contextStart) * 1000 + playbackOffsetMs);
   playheadTimeMs = playbackOffsetMs + settings.latencyMs;
   currentTimeMs.value = playheadTimeMs;
@@ -158,7 +175,9 @@ function hitLane(lane: number) {
   if (!note) return;
   const grade = classifyTiming(playheadTimeMs - note.startMs);
   if (grade === "miss") return;
-  note.head = grade; record(grade);
+  note.head = grade;
+  playNoteHit(note, grade, note.type === "hold" ? "holdHead" : "tap");
+  record(grade);
   if (note.type === "tap") note.status = "done";
   else note.status = "holding";
 }
@@ -167,7 +186,9 @@ function releaseLane(lane: number) {
   const note = notes.value.find((item) => item.lane === lane && item.status === "holding" && item.tail === "pending");
   if (!note || note.endMs == null) return;
   const grade = classifyTiming(playheadTimeMs - note.endMs);
-  note.tail = grade; note.status = grade === "miss" ? "missed" : "done"; record(grade);
+  note.tail = grade; note.status = grade === "miss" ? "missed" : "done";
+  playNoteHit(note, grade, "holdTail");
+  record(grade);
 }
 
 function onKeydown(event: KeyboardEvent) {
@@ -180,7 +201,7 @@ function onKeydown(event: KeyboardEvent) {
   }
   if (event.code === "KeyA" && !running.value) { event.preventDefault(); toggleAutoplay(); return; }
   if (autoplay.value) return;
-  if (event.repeat || !running.value || heldCodes.has(event.code)) return;
+  if (event.repeat || !running.value || countdown.value != null || heldCodes.has(event.code)) return;
   const lane = settings.keys.indexOf(event.code);
   if (lane < 0) return;
   event.preventDefault(); heldCodes.add(event.code); pressed.value[lane] = true; hitLane(lane);
@@ -202,7 +223,9 @@ function processMisses() {
     if (note.type === "hold" && note.status === "holding" && note.tail === "pending" && note.endMs != null && playheadTimeMs >= note.endMs) {
       const code = settings.keys[note.lane];
       const grade: Grade = heldCodes.has(code) ? "perfect" : "miss";
-      note.tail = grade; note.status = grade === "miss" ? "missed" : "done"; record(grade);
+      note.tail = grade; note.status = grade === "miss" ? "missed" : "done";
+      playNoteHit(note, grade, "holdTail");
+      record(grade);
     }
   }
 }
@@ -211,6 +234,7 @@ function processAutoplay() {
   for (const note of notes.value) {
     if (note.head === "pending" && playheadTimeMs >= note.startMs) {
       note.head = "perfect";
+      playNoteHit(note, "perfect", note.type === "hold" ? "holdHead" : "tap");
       record("perfect");
       flashAutoLane(note.lane);
       if (note.type === "tap") note.status = "done";
@@ -223,6 +247,7 @@ function processAutoplay() {
         note.endMs != null && playheadTimeMs >= note.endMs) {
       note.tail = "perfect";
       note.status = "done";
+      playNoteHit(note, "perfect", "holdTail");
       record("perfect");
       const anotherHold = notes.value.some((item) => item !== note && item.lane === note.lane && item.status === "holding");
       if (!anotherHold) pressed.value[note.lane] = false;
@@ -246,12 +271,20 @@ async function completeGame() {
 
 function getRenderTimeMs() {
   if (running.value && context) {
-    return (context.currentTime - contextStart) * 1000 + playbackOffsetMs + settings.latencyMs;
+    const rawTimeMs = (context.currentTime - contextStart) * 1000 + playbackOffsetMs + settings.latencyMs;
+    if (countdown.value != null) {
+      return countdownRenderTimeMs(rawTimeMs, approachDurationMs(settings.scrollSpeed), firstNoteTimeMs);
+    }
+    return rawTimeMs;
   }
   return playheadTimeMs;
 }
 
 function tick(frameTime: number) {
+  if (countdown.value != null && context) {
+    const remaining = countdownNumber(context.currentTime, contextStart);
+    countdown.value = remaining > 0 ? remaining : null;
+  }
   if (running.value && context) {
     playheadTimeMs = getRenderTimeMs();
     if (frameTime - lastHudUpdate >= 50) {
@@ -274,11 +307,15 @@ async function load() {
       endMs: note.endBeat == null ? undefined : beatToTimeMs(note.endBeat, chart.value!.timing.anchors),
       head: "pending", tail: note.type === "hold" ? "pending" : undefined, status: "pending",
     }));
+    firstNoteTimeMs = notes.value.reduce((earliest, note) => Math.min(earliest, note.startMs), Number.POSITIVE_INFINITY);
+    if (!Number.isFinite(firstNoteTimeMs)) firstNoteTimeMs = 0;
     loadingMessage.value = "正在解码音频";
     context = new AudioContext();
+    hitSounds = new HitSoundPlayer(context);
     const response = await fetch(api.audioUrl(songId));
     if (!response.ok) throw new Error("音频加载失败");
     buffer = await context.decodeAudioData(await response.arrayBuffer());
+    await hitSounds.prepare();
     ready.value = true;
   } catch (cause) { error.value = cause instanceof Error ? cause.message : "无法开始游戏"; }
   finally { loading.value = false; }
@@ -289,6 +326,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKeydown); window.removeEventListener("keyup", onKeyup);
   cancelAnimationFrame(animationFrame); if (judgementTimer) clearTimeout(judgementTimer);
   clearAutoLaneTimers();
+  hitSounds?.dispose();
   source?.stop(); void context?.close();
 });
 </script>
@@ -310,10 +348,11 @@ onBeforeUnmount(() => {
         <div v-if="combo > 1 && running" class="combo-display"><strong>{{ combo }}</strong><span>COMBO</span></div>
         <div v-if="loading" class="game-overlay"><div class="loader-ring" /><h2>{{ loadingMessage }}</h2><p>首次载入需要稍等片刻</p></div>
         <div v-else-if="error && !ready" class="game-overlay"><h2>无法开始</h2><p>{{ error }}</p><button class="secondary-button" @click="router.push('/')">返回曲库</button></div>
+        <div v-else-if="countdown != null" class="game-overlay countdown-overlay"><span class="eyebrow">GET READY</span><Transition name="count-pop" mode="out-in"><strong :key="countdown">{{ countdown }}</strong></Transition><p>准备击打</p><small>空格键取消</small></div>
         <div v-else-if="ready && !running && !paused && !finished" class="game-overlay start-overlay"><span class="eyebrow">READY TO PLAY</span><h2>{{ difficultyLabel }}</h2><p>{{ autoplay ? 'Autoplay 将自动演示全部音符' : `使用 ${keyLabels.join(' · ')} 击打四条轨道` }}</p><button class="start-button" @click="startGame"><Play :size="24" />开始</button><small>{{ autoplay ? 'AUTO 成绩不会保存 · A 切换' : '空格键开始 · A 开关 Autoplay' }}</small></div>
         <div v-else-if="paused" class="game-overlay"><Pause :size="30" /><h2>已暂停</h2><p>保持节奏，准备好再继续。</p><div class="overlay-actions"><button class="start-button small" @click="resumeGame"><Play :size="19" />继续</button><button class="ghost-button" @click="restartGame"><RotateCcw :size="17" />重新开始</button></div></div>
       </main>
-      <aside class="game-metrics right"><div><small>CHART</small><strong>v{{ chart?.revision ?? 0 }}</strong></div><div><small>NOTES</small><strong>{{ totalEvents }}</strong></div><div class="key-reminder"><span v-for="key in keyLabels" :key="key">{{ key }}</span></div><button class="autoplay-toggle" :class="{ active: autoplay }" :disabled="running" @click="toggleAutoplay"><Bot :size="17" /><span><small>AUTOPLAY</small><b>{{ autoplay ? 'ON' : 'OFF' }}</b></span><i>A</i></button><div class="game-speed-control"><button aria-label="降低下落速度" :disabled="settings.scrollSpeed <= 1" @click="adjustSpeed(-1)">−</button><span><small>SPEED</small><b>{{ settings.scrollSpeed }}</b><i>/ 10</i></span><button aria-label="提高下落速度" :disabled="settings.scrollSpeed >= 10" @click="adjustSpeed(1)">＋</button></div><p><Settings2 :size="15" />延迟 {{ settings.latencyMs }} ms<br />Autoplay 不记录最佳成绩</p></aside>
+      <aside class="game-metrics right"><div><small>CHART</small><strong>v{{ chart?.revision ?? 0 }}</strong></div><div><small>NOTES</small><strong>{{ totalEvents }}</strong></div><div class="key-reminder"><span v-for="key in keyLabels" :key="key">{{ key }}</span></div><button class="autoplay-toggle" :class="{ active: autoplay }" :disabled="running" @click="toggleAutoplay"><Bot :size="17" /><span><small>AUTOPLAY</small><b>{{ autoplay ? 'ON' : 'OFF' }}</b></span><i>A</i></button><div class="game-speed-control"><button aria-label="降低下落速度" :disabled="settings.scrollSpeed <= 1" @click="adjustSpeed(-1)">−</button><span><small>SPEED</small><b>{{ settings.scrollSpeed }}</b><i>/ 10</i></span><button aria-label="提高下落速度" :disabled="settings.scrollSpeed >= 10" @click="adjustSpeed(1)">＋</button></div><div class="game-hit-volume"><label for="game-hit-volume"><small>HIT VOLUME</small><b>{{ Math.round(settings.hitVolume * 100) }}%</b></label><input id="game-hit-volume" v-model.number="settings.hitVolume" aria-label="打击音量" type="range" min="0" max="1" step="0.01" /></div><p><Settings2 :size="15" />延迟 {{ settings.latencyMs }} ms<br />Autoplay 不记录最佳成绩</p></aside>
     </div>
 
     <Transition name="fade">

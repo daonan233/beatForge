@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useRoute } from "vue-router";
-import { Gauge, Library, RotateCcw, Settings, X } from "lucide-vue-next";
+import { Gauge, Library, RotateCcw, Settings, Volume2, X } from "lucide-vue-next";
 import { useSettings } from "./composables/settings";
 
 const route = useRoute();
@@ -42,8 +42,13 @@ function captureKey(index: number, event: KeyboardEvent) {
             </div>
           </div>
           <div class="setting-block">
-            <label for="volume">音量 <strong>{{ Math.round(settings.volume * 100) }}%</strong></label>
+            <label for="volume">歌曲音量 <strong>{{ Math.round(settings.volume * 100) }}%</strong></label>
             <input id="volume" v-model.number="settings.volume" type="range" min="0" max="1" step="0.01" />
+          </div>
+          <div class="setting-block">
+            <label for="hit-volume"><Volume2 :size="16" /> 打击音量 <strong>{{ Math.round(settings.hitVolume * 100) }}%</strong></label>
+            <input id="hit-volume" v-model.number="settings.hitVolume" type="range" min="0" max="1" step="0.01" />
+            <p>只调整音符命中时的镲片音量，不影响歌曲音量。</p>
           </div>
           <div class="setting-block">
             <label for="latency">设备延迟 <strong>{{ settings.latencyMs }} ms</strong></label>

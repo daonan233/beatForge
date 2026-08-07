@@ -4,6 +4,7 @@ import { clampScrollSpeed } from "../game/scroll";
 export interface PlayerSettings {
   keys: string[];
   volume: number;
+  hitVolume: number;
   latencyMs: number;
   scrollSpeed: number;
 }
@@ -11,24 +12,26 @@ export interface PlayerSettings {
 const defaults: PlayerSettings = {
   keys: ["KeyD", "KeyF", "KeyJ", "KeyK"],
   volume: 0.8,
+  hitVolume: 0.75,
   latencyMs: 0,
   scrollSpeed: 4,
 };
 
-const settingsVersion = 2;
+const settingsVersion = 3;
 
 function load(): PlayerSettings {
   try {
     const stored = JSON.parse(localStorage.getItem("beatforge-settings") ?? "{}") as Partial<PlayerSettings> & { version?: number };
     const merged = { ...defaults, ...stored };
     let scrollSpeed = Number(merged.scrollSpeed);
-    if (stored.version !== settingsVersion && typeof stored.scrollSpeed === "number") {
+    if ((stored.version ?? 0) < 2 && typeof stored.scrollSpeed === "number") {
       const legacy = Math.max(0.6, Math.min(2, stored.scrollSpeed));
       scrollSpeed = 1 + (legacy - 0.6) / 1.4 * 9;
     }
     return {
       keys: Array.isArray(merged.keys) && merged.keys.length === 4 ? merged.keys : [...defaults.keys],
-      volume: Number(merged.volume),
+      volume: Math.max(0, Math.min(1, Number(merged.volume))),
+      hitVolume: Math.max(0, Math.min(1, Number(merged.hitVolume))),
       latencyMs: Number(merged.latencyMs),
       scrollSpeed: clampScrollSpeed(scrollSpeed),
     };
