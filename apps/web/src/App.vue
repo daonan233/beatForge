@@ -56,8 +56,8 @@ function captureKey(index: number, event: KeyboardEvent) {
             <p>音符看起来偏晚时调高，偏早时调低。</p>
           </div>
           <div class="setting-block">
-            <label for="speed"><Gauge :size="16" /> 下落速度 <strong>{{ settings.scrollSpeed }} / 10</strong></label>
-            <input id="speed" v-model.number="settings.scrollSpeed" type="range" min="1" max="10" step="1" />
+            <label for="speed"><Gauge :size="16" /> 下落速度 <strong>{{ settings.scrollSpeed }} / 30</strong></label>
+            <input id="speed" v-model.number="settings.scrollSpeed" type="range" min="1" max="30" step="1" />
             <p>速度只改变音符的可视距离，不影响音乐时间和判定。</p>
           </div>
           <footer><button class="ghost-button" @click="reset"><RotateCcw :size="16" />恢复默认</button><button class="primary-button" @click="settingsOpen = false">保存设置</button></footer>
