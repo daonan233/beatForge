@@ -16,4 +16,6 @@ __pycache__/
 .env
 .venv/
 .venv-ai/
+.ai-wheels/
+.setup-local*.log
 .DS_Store
