@@ -12,6 +12,26 @@ export interface GameRenderNote {
   status: string;
 }
 
+export interface HitEffectTrigger {
+  id: number;
+  lane: number;
+  grade: "perfect" | "great" | "good";
+  kind: "tap" | "holdHead" | "holdTail";
+}
+
+interface HitParticle {
+  offset: number;
+  lift: number;
+  size: number;
+  bright: boolean;
+}
+
+interface HitBurst extends HitEffectTrigger {
+  startedAt: number;
+  duration: number;
+  particles: HitParticle[];
+}
+
 const props = defineProps<{
   notes: GameRenderNote[];
   timeSource: () => number;
@@ -19,6 +39,7 @@ const props = defineProps<{
   pressed: boolean[];
   keyLabels: string[];
   judgement: string;
+  hitEffect: HitEffectTrigger | null;
 }>();
 
 const host = ref<HTMLDivElement>();
@@ -37,6 +58,8 @@ let topY = 62;
 let centerX = 0;
 let topHalf = 0;
 let bottomHalf = 0;
+let lastHitEffectId = 0;
+const hitBursts: HitBurst[] = [];
 const laneColors = [0xc6ff4f, 0x72e6ff, 0xff7a9e, 0xc89bff];
 const judgementColors: Record<string, number> = {
   PERFECT: 0xc6ff4f, GREAT: 0x72e6ff, GOOD: 0xffc061, MISS: 0xff5e73,
@@ -62,6 +85,79 @@ function laneQuad(lane: number, farDepth: number, nearDepth: number, inset = 0) 
     laneEdge(lane + 1, nearDepth) - inset * Math.max(.25, nearDepth), yAt(nearDepth),
     laneEdge(lane, nearDepth) + inset * Math.max(.25, nearDepth), yAt(nearDepth),
   ];
+}
+
+function createHitBurst(trigger: HitEffectTrigger) {
+  const particleCount = trigger.grade === "perfect" ? 15 : trigger.grade === "great" ? 10 : 7;
+  const strength = trigger.kind === "holdTail" ? .78 : 1;
+  const particles = Array.from({ length: particleCount }, (_, index): HitParticle => {
+    const spread = index / (particleCount - 1) * 2 - 1;
+    const jitter = Math.sin((trigger.id + 1) * (index + 2) * 1.73) * .16;
+    return {
+      offset: Math.max(-1, Math.min(1, spread + jitter)),
+      lift: (34 + (index % 5) * 12 + Math.abs(jitter) * 28) * strength,
+      size: (index % 3 === 0 ? 3.2 : 2.1) * strength,
+      bright: index % 4 === 0,
+    };
+  });
+  hitBursts.push({
+    ...trigger,
+    startedAt: performance.now(),
+    duration: (trigger.grade === "perfect" ? 440 : trigger.grade === "great" ? 360 : 290) * strength,
+    particles,
+  });
+  if (hitBursts.length > 18) hitBursts.splice(0, hitBursts.length - 18);
+}
+
+function drawHitEffects(graphics: Graphics, now: number) {
+  for (let index = hitBursts.length - 1; index >= 0; index -= 1) {
+    const burst = hitBursts[index];
+    const progress = Math.max(0, Math.min(1, (now - burst.startedAt) / burst.duration));
+    if (progress >= 1) {
+      hitBursts.splice(index, 1);
+      continue;
+    }
+    const color = laneColors[burst.lane];
+    const laneLeft = laneEdge(burst.lane, 1);
+    const laneRight = laneEdge(burst.lane + 1, 1);
+    const laneWidth = laneRight - laneLeft;
+    const laneCenter = (laneLeft + laneRight) / 2;
+    const fade = (1 - progress) ** 1.6;
+    const gradeStrength = burst.grade === "perfect" ? 1 : burst.grade === "great" ? .78 : .56;
+    const tailStrength = burst.kind === "holdTail" ? .76 : 1;
+    const intensity = gradeStrength * tailStrength;
+
+    graphics.poly(laneQuad(burst.lane, .78 - progress * .08, 1, 2))
+      .fill({ color, alpha: .22 * fade * intensity });
+
+    const flashWidth = laneWidth * (.78 + progress * .12);
+    const flashY = targetY - 5 - progress * 5;
+    graphics.roundRect(laneCenter - flashWidth / 2, flashY - 5, flashWidth, 10, 4)
+      .fill({ color, alpha: .13 * fade * intensity });
+    graphics.roundRect(laneCenter - flashWidth * .46, flashY - 2.5, flashWidth * .92, 5, 2.5)
+      .fill({ color: 0xffffff, alpha: .82 * fade * intensity });
+    graphics.roundRect(laneCenter - flashWidth * .41, flashY - 1.5, flashWidth * .82, 3, 1.5)
+      .fill({ color, alpha: .95 * fade });
+
+    const ringWidth = laneWidth * (.2 + progress * .54);
+    graphics.ellipse(laneCenter, targetY - 8 - progress * 8, ringWidth, 5 + progress * 16)
+      .stroke({ color: burst.grade === "perfect" ? 0xffffff : color, width: 2.4 - progress * 1.2, alpha: .68 * fade * intensity });
+    graphics.ellipse(laneCenter, targetY - 8 - progress * 6, ringWidth * .72, 3 + progress * 10)
+      .stroke({ color, width: 2, alpha: .52 * fade });
+
+    for (const particle of burst.particles) {
+      const outward = particle.offset * laneWidth * (.16 + progress * .52);
+      const curve = particle.offset * Math.sin(progress * Math.PI) * 8;
+      const x = laneCenter + outward + curve;
+      const y = targetY - 8 - particle.lift * progress - 18 * progress * progress;
+      const size = Math.max(.5, particle.size * (1 - progress * .72));
+      const particleColor = particle.bright ? 0xffffff : color;
+      graphics.moveTo(x, y + size * 4.2).lineTo(x, y)
+        .stroke({ color: particleColor, width: Math.max(.7, size * .7), alpha: .54 * fade * intensity });
+      graphics.circle(x, y, size)
+        .fill({ color: particleColor, alpha: .9 * fade * intensity });
+    }
+  }
 }
 
 function drawStaticScene() {
@@ -115,8 +211,14 @@ function drawFrame() {
   if (!dynamicGraphics || !width || !height) return;
   const graphics = dynamicGraphics.clear();
   const currentTimeMs = props.timeSource();
+  const visualTime = performance.now();
   const approachMs = approachDurationMs(props.speed);
   const depthForTime = (timeMs: number) => Math.max(0, Math.min(1.06, 1 - (timeMs - currentTimeMs) / approachMs));
+
+  if (props.hitEffect && props.hitEffect.id !== lastHitEffectId) {
+    lastHitEffectId = props.hitEffect.id;
+    createHitBurst(props.hitEffect);
+  }
 
   for (let lane = 0; lane < 4; lane += 1) {
     if (props.pressed[lane]) {
@@ -166,6 +268,8 @@ function drawFrame() {
     graphics.poly(laneQuad(note.lane, farDepth, Math.min(1.04, depth), 5))
       .fill({ color }).stroke({ color: 0xffffff, alpha: .64, width: 1.2 + depth * 1.3 });
   }
+
+  drawHitEffects(graphics, visualTime);
 
   if (judgementText) {
     judgementText.visible = Boolean(props.judgement);
@@ -221,6 +325,7 @@ onUnmounted(() => {
   observer?.disconnect();
   pixi?.ticker.remove(drawFrame);
   pixi?.destroy(true, { children: true });
+  hitBursts.length = 0;
 });
 </script>
 

@@ -102,7 +102,7 @@ onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer); eventSource?.cl
     <section class="hero-panel">
       <div class="hero-copy">
         <span class="eyebrow"><Sparkles :size="14" /> AUDIO TO PLAYABLE</span>
-        <h1>把每一首歌，<br /><em>铸成一场节奏。</em></h1>
+        <h1>从一首歌开始，<br /><em>打造专属谱面。</em></h1>
         <p>上传你拥有使用权的音频。BeatForge 会分析节拍、生成四档四轨谱面，并把最后的决定权交给你的编辑器。</p>
         <button class="primary-button large" @click="uploadOpen = true"><Plus :size="19" />上传一首歌<ArrowRight :size="18" /></button>
       </div>
@@ -138,7 +138,7 @@ onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer); eventSource?.cl
         <button class="secondary-button" @click="uploadOpen = true"><UploadCloud :size="17" />选择音频</button>
       </div>
       <div v-else class="song-grid">
-        <article v-for="(song, index) in songs" :key="song.id" class="song-card">
+        <article v-for="(song, index) in songs" :key="song.id" class="song-card" :style="{ animationDelay: `${Math.min(index, 8) * 45}ms` }">
           <div class="cover" :class="`cover-${(index % 4) + 1}`"><FileAudio :size="26" /><span>{{ formatDuration(song.durationMs) }}</span></div>
           <div class="song-main">
             <div class="song-title-row"><div><h3>{{ song.title }}</h3><p>{{ song.artist || '未知艺术家' }} · {{ song.originalName }}</p></div><span class="state" :class="song.status">{{ song.status === 'ready' ? '已就绪' : song.status === 'failed' ? '失败' : '分析中' }}</span></div>

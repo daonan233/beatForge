@@ -11,6 +11,15 @@ const settingsOpen = ref(false);
 const { settings, reset } = useSettings();
 const isGame = computed(() => route.name === "game");
 const keyLabels = computed(() => settings.keys.map((key) => key.replace("Key", "")));
+const pointerX = ref("50%");
+const pointerY = ref("18%");
+
+function trackAmbient(event: PointerEvent) {
+  if (isGame.value) return;
+  const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  pointerX.value = `${((event.clientX - bounds.left) / bounds.width) * 100}%`;
+  pointerY.value = `${((event.clientY - bounds.top) / bounds.height) * 100}%`;
+}
 
 function captureKey(index: number, event: KeyboardEvent) {
   event.preventDefault();
@@ -23,11 +32,21 @@ function applyLatency(latencyMs: number) {
 </script>
 
 <template>
-  <div class="app-shell" :class="{ 'game-shell': isGame }">
+  <div
+    class="app-shell"
+    :class="{ 'game-shell': isGame }"
+    :style="{ '--pointer-x': pointerX, '--pointer-y': pointerY }"
+    @pointermove.passive="trackAmbient"
+  >
+    <div v-if="!isGame" class="ambient-canvas" aria-hidden="true">
+      <span class="ambient-orb ambient-orb-lime" />
+      <span class="ambient-orb ambient-orb-cyan" />
+      <i class="ambient-grid" />
+    </div>
     <header v-if="!isGame" class="topbar">
-      <RouterLink class="brand" to="/" aria-label="BeatForge 曲库">
+      <RouterLink class="brand" to="/" aria-label="节奏工坊 BeatForge 曲库">
         <span class="brand-mark"><i /><i /><i /><i /></span>
-        <span><b>BEAT</b>FORGE</span>
+        <span class="brand-name"><strong>节奏工坊</strong><small>BEATFORGE</small></span>
       </RouterLink>
       <nav>
         <RouterLink to="/"><Library :size="17" />曲库</RouterLink>
@@ -35,7 +54,13 @@ function applyLatency(latencyMs: number) {
       </nav>
       <div class="status-chip"><span /> 本地工作室</div>
     </header>
-    <main :class="{ 'main-padded': !isGame }"><RouterView /></main>
+    <main :class="{ 'main-padded': !isGame }">
+      <RouterView v-slot="{ Component, route: activeRoute }">
+        <Transition name="page" mode="out-in">
+          <component :is="Component" :key="activeRoute.fullPath" />
+        </Transition>
+      </RouterView>
+    </main>
 
     <Transition name="fade">
       <div v-if="settingsOpen" class="modal-backdrop" @mousedown.self="settingsOpen = false">

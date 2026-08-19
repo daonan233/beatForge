@@ -5,7 +5,7 @@ import type { ChartNote, ChartSet, Difficulty, ScoreSummary, SongDetail } from "
 import { beatToTimeMs } from "@beatforge/shared";
 import { api } from "../api";
 import { useSettings } from "../composables/settings";
-import GameBoard, { type GameRenderNote } from "../components/GameBoard.vue";
+import GameBoard, { type GameRenderNote, type HitEffectTrigger } from "../components/GameBoard.vue";
 import { ArrowLeft, Bot, Pause, Play, RotateCcw, Settings2, Trophy } from "lucide-vue-next";
 import { classifyTiming, judgementWeights, judgementWindowsForDifficulty, normalizedScore, type Grade } from "../game/scoring";
 import { countdownNumber, countdownRenderTimeMs, GAME_COUNTDOWN_SECONDS } from "../game/countdown";
@@ -39,6 +39,7 @@ const countdown = ref<number | null>(null);
 const currentTimeMs = ref(-1000);
 const pressed = ref([false, false, false, false]);
 const judgement = ref("");
+const hitEffect = ref<HitEffectTrigger | null>(null);
 const combo = ref(0);
 const maxCombo = ref(0);
 const counts = ref<Record<Grade, number>>({ perfect: 0, great: 0, good: 0, miss: 0 });
@@ -53,6 +54,7 @@ let playbackOffsetMs = 0;
 let firstNoteTimeMs = 0;
 let animationFrame = 0;
 let judgementTimer: number | undefined;
+let hitEffectId = 0;
 let hitSounds: HitSoundPlayer | undefined;
 let completing = false;
 let playheadTimeMs = -1000;
@@ -112,6 +114,12 @@ function record(grade: Grade) {
 function playNoteHit(note: RuntimeNote, grade: Grade, kind: HitSoundKind) {
   if (grade === "miss") return;
   hitSounds?.play({ kind, lane: note.lane, grade, volume: settings.hitVolume });
+  hitEffect.value = {
+    id: ++hitEffectId,
+    lane: note.lane,
+    grade,
+    kind,
+  };
 }
 
 function resetState() {
@@ -345,7 +353,7 @@ onBeforeUnmount(() => {
     <div class="game-stage-wrap">
       <aside class="game-metrics left"><div><small>ACCURACY</small><strong>{{ accuracy.toFixed(2) }}<i>%</i></strong></div><div><small>MAX COMBO</small><strong>{{ maxCombo }}</strong></div><div class="judgement-list"><span><i class="perfect" />PERFECT <b>{{ counts.perfect }}</b></span><span><i class="great" />GREAT <b>{{ counts.great }}</b></span><span><i class="good" />GOOD <b>{{ counts.good }}</b></span><span><i class="miss" />MISS <b>{{ counts.miss }}</b></span></div></aside>
       <main class="game-cabinet">
-        <GameBoard :notes="notes" :time-source="getRenderTimeMs" :speed="settings.scrollSpeed" :pressed="pressed" :key-labels="keyLabels" :judgement="judgement" />
+        <GameBoard :notes="notes" :time-source="getRenderTimeMs" :speed="settings.scrollSpeed" :pressed="pressed" :key-labels="keyLabels" :judgement="judgement" :hit-effect="hitEffect" />
         <div v-if="combo > 1 && running" class="combo-display"><strong>{{ combo }}</strong><span>COMBO</span></div>
         <div v-if="loading" class="game-overlay"><div class="loader-ring" /><h2>{{ loadingMessage }}</h2><p>首次载入需要稍等片刻</p></div>
         <div v-else-if="error && !ready" class="game-overlay"><h2>无法开始</h2><p>{{ error }}</p><button class="secondary-button" @click="router.push('/')">返回曲库</button></div>
